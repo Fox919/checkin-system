@@ -14,6 +14,17 @@ app.use(cors());
 
 app.use(express.json());
 
+// 建議加一個根目錄測試，確認伺服器活著
+app.get('/', (req, res) => {
+    res.send("Backend is running!");
+});
+
+// 確保路徑拼寫與前端呼叫的一致
+app.get('/api/checkin-history', (req, res) => {
+    // 你的資料庫查詢邏輯...
+    res.json({ message: "Success" }); 
+});
+
 const db = mysql.createConnection({
   // 將 DB_HOST 改為 MYSQLHOST，依此類推
   host: process.env.MYSQLHOST || "localhost",
@@ -101,9 +112,8 @@ db.query(
   });
 });
 
-// 改用 5050 端口，避免跟 React 衝突
-const PORT = 5050;
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 伺服器改跑在：http://localhost:${PORT}`);
+// 關鍵：監聽環境變數 PORT 並使用 0.0.0.0
+const PORT = process.env.PORT || 5050;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
 });
