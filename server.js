@@ -1,17 +1,15 @@
+import 'dotenv/config'; // 💡 這是 ESM 最安全的寫法，自動執行 config()
 import express from "express";
 import mysql from "mysql2";
 import cors from "cors";
-import dotenv from "dotenv";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 
-dotenv.config();
-
+console.log("--- 程式啟動中 ---");
+console.log("當前 PORT 變數:", process.env.PORT);
 
 const app = express();
-
 app.use(cors());
-
 app.use(express.json());
 
 // 建議加一個根目錄測試，確認伺服器活著
