@@ -25,6 +25,12 @@ app.get('/api/checkin-history', (req, res) => {
     res.json({ message: "Success" }); 
 });
 
+// 關鍵：監聽環境變數 PORT 並使用 0.0.0.0
+const PORT = process.env.PORT || 5050;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
+});
+// 7. 資料庫連線 (放在 listen 後面可以防止連線卡住導致伺服器無法啟動)
 const db = mysql.createConnection({
   // 將 DB_HOST 改為 MYSQLHOST，依此類推
   host: process.env.MYSQLHOST || "localhost",
@@ -112,8 +118,3 @@ db.query(
   });
 });
 
-// 關鍵：監聽環境變數 PORT 並使用 0.0.0.0
-const PORT = process.env.PORT || 5050;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server is running on port ${PORT}`);
-});
