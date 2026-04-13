@@ -35,10 +35,9 @@ const db = mysql.createConnection({
   user: process.env.MYSQLUSER || "root",
   password: process.env.MYSQLPASSWORD || "",
   database: process.env.MYSQLDATABASE || "your_db_name",
-  port: process.env.MYSQLPORT || 3306
+  port: process.env.MYSQLPORT || 3306,
 // 加入下面這一行 (洛杉磯目前是夏令時間 -07:00)
     timezone: '-07:00'
-
 });
 
 db.connect((err) => {
