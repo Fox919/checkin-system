@@ -37,7 +37,7 @@ const db = mysql.createConnection({
   database: process.env.MYSQLDATABASE || "your_db_name",
   port: process.env.MYSQLPORT || 3306,
 // 加入下面這一行 (洛杉磯目前是夏令時間 -07:00)
-    timezone: '-07:00'
+    timezone: '-07:00' 
 });
 
 db.connect((err) => {
@@ -83,38 +83,38 @@ app.post("/checkin", (req, res) => {
     if (users.length === 0) return res.status(404).json({ error: "找不到此學員" });
 
     const user_id = users[0].id;
+
+    // --- 【關鍵：洛杉磯時間處理】 ---
     const now = new Date();
-    const today = now.toISOString().slice(0, 10); // YYYY-MM-DD
-    const currentTime = now.toTimeString().slice(0, 8); // HH:MM:SS
+    // 使用 sv-SE 格式產生 YYYY-MM-DD HH:MM:SS 格式的洛杉磯時間
+    const laFullTime = now.toLocaleString("sv-SE", { timeZone: "America/Los_Angeles" });
+    const today = laFullTime.slice(0, 10); // 取得 YYYY-MM-DD
 
     // 檢查今天是否重複簽到
     db.query(
       "SELECT * FROM checkins WHERE user_id=? AND checkin_date=?",
       [user_id, today],
       (err, rows) => {
+        if (err) return res.status(500).json({ error: "重複檢查失敗" });
         if (rows && rows.length > 0) return res.json({ message: "今天已簽到過了" });
 
-        // 寫入簽到紀錄 (確保欄位名稱與你的資料庫完全一致)
+        // --- 【修改後的寫入邏輯】 ---
+        // 我們不再使用 NOW() 和 CURDATE()，而是直接傳入剛剛算好的 laFullTime 和 today
+        const sql = "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, ?, ?)";
 
-
-
-        // 1. SQL 字串裡有 1 個問號，對應 1 個變數
-// 2. 使用 CONVERT_TZ 強制將時間轉為洛杉磯 (-07:00)
-const sql = "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, CONVERT_TZ(NOW(), '+00:00', '-07:00'), CURDATE())";
-
-db.query(
-  sql,
-  [user_id], // <--- 這個絕對要保留！它對應 SQL 裡的第一個問號
-  (err) => {
-    if (err) {
-      console.log("❌ 簽到寫入失敗:", err);
-      return res.status(500).json({ error: "寫入簽到表失敗" });
-    }
-    res.json({ message: "簽到成功！歡迎光臨" });
-  }
-);
+        db.query(
+          sql,
+          [user_id, laFullTime, today], // 這裡對應三個問號
+          (err) => {
+            if (err) {
+              console.log("❌ 簽到寫入失敗:", err);
+              return res.status(500).json({ error: "寫入簽到表失敗" });
+            }
+            console.log(`[簽到成功] ID: ${user_id}, 時間: ${laFullTime}`);
+            res.json({ message: `簽到成功！時間：${laFullTime}` });
+          }
+        );
       }
     );
   });
 });
-
