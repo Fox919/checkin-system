@@ -36,15 +36,27 @@ app.post("/register", (req, res) => {
   
   db.query(sql, [name, phone, user_type, qr_code], (err, result) => {
     if (err) return res.status(500).json({ error: "登記失敗" });
-    res.json({ success: true, qr_code: qr_code });
+    
+    // 關鍵修改：回傳 result.insertId
+    res.json({ 
+      success: true, 
+      id: result.insertId, // 這是資料庫自動生成的數字 ID
+      qr_code: qr_code 
+    });
+  });
+});// --- 你原本的簽到路由 ---
+app.post("/checkin/:id", (req, res) => {
+  const userId = req.params.id; // 這裡拿到的是數字
+  const sql = "UPDATE users SET status = 'checked-in' WHERE id = ?";
+  
+  db.query(sql, [userId], (err, result) => {
+    if (err) return res.status(500).json({ error: "簽到失敗" });
+    if (result.affectedRows === 0) return res.status(404).json({ error: "找不到此用戶" });
+    
+    // 也可以再查詢一次名字回傳給前端顯示
+    res.json({ success: true, name: "用戶" }); 
   });
 });
-
-// --- 你原本的簽到路由 ---
-app.post("/checkin", (req, res) => {
-  // ... 原本的代碼
-});
-
 // 6. 啟動伺服器
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
