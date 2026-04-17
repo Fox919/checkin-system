@@ -2,21 +2,31 @@
 import express from 'express';
 import mysql from 'mysql2';
 import cors from 'cors';
+import dotenv from 'dotenv'; // 1. 確保有引入 dotenv
 
-// 2. 初始化 app (這行沒寫就會報你看到的錯誤)
+dotenv.config(); // 2. 必須執行 config() 才會讀取變數
+
 const app = express();
-
-// 3. 中間件設定
 app.use(cors());
 app.use(express.json());
 
-// 4. 資料庫連線設定 (這裡維持你原本的 db 設定)
+// 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
 const db = mysql.createConnection({
   host: process.env.MYSQLHOST,
-  // ... 其他設定
+  user: process.env.MYSQLUSER,        // 檢查是否寫成 MYSQLUSER
+  password: process.env.MYSQLPASSWORD, // 檢查是否寫成 MYSQLPASSWORD
+  database: process.env.MYSQLDATABASE, // 檢查是否寫成 MYSQLDATABASE
+  port: process.env.MYSQLPORT || 3306
 });
 
-// 5. 路由設定 (這裡才是放 app.post 的地方)
+// 4. 增加一個錯誤監聽，防止程式因為連線失敗直接崩潰
+db.connect((err) => {
+  if (err) {
+    console.error('❌ 資料庫連線失敗:', err.message);
+    return;
+  }
+  console.log('✅ 成功連進 Railway MySQL 資料庫！');
+});// 5. 路由設定 (這裡才是放 app.post 的地方)
 
 // --- 你剛新增的註冊路由 ---
 app.post("/register", (req, res) => {
