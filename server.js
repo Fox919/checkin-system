@@ -46,19 +46,42 @@ app.post("/register", (req, res) => {
   });
 });// --- 你原本的簽到路由 ---
 app.post("/checkin/:id", (req, res) => {
-  const userId = req.params.id; // 這裡拿到的是數字
-  const sql = "UPDATE users SET status = 'checked-in' WHERE id = ?";
+  const userId = req.params.id;
+
+  // 1. 檢查用戶是否存在
+  const findUserSql = "SELECT name, user_type FROM users WHERE id = ?";
   
-  db.query(sql, [userId], (err, result) => {
-    if (err) return res.status(500).json({ error: "簽到失敗" });
-    if (result.affectedRows === 0) return res.status(404).json({ error: "找不到此用戶" });
+  db.query(findUserSql, [userId], (err, rows) => {
+    if (err) return res.status(500).json({ error: "數據庫查詢失敗" });
+    if (rows.length === 0) return res.status(404).json({ error: "找不到此用戶" });
+
+    const { name, user_type } = rows[0];
+
+    // 2. 更新 users 表狀態 (標記目前在場)
+    const updateUserSql = "UPDATE users SET status = 'checked-in' WHERE id = ?";
     
-    // 也可以再查詢一次名字回傳給前端顯示
-    res.json({ success: true, name: "用戶" }); 
+    db.query(updateUserSql, [userId], (updateErr) => {
+      if (updateErr) return res.status(500).json({ error: "更新用戶狀態失敗" });
+
+      // 3. 寫入 checkins 歷史紀錄表 (留下時間足跡)
+      // 使用 NOW() 讓資料庫自動填入當前時間
+      const insertCheckinSql = "INSERT INTO checkins (user_id, checkin_time) VALUES (?, NOW())";
+      
+      db.query(insertCheckinSql, [userId], (insertErr) => {
+        if (insertErr) {
+          console.error("❌ 寫入 checkins 紀錄失敗:", insertErr);
+          // 這裡我們不報錯給前端，因為 users 表已經更新成功了
+        } else {
+          console.log(`✅ 已為 ${name} 新增一筆簽到紀錄`);
+        }
+        
+        // 4. 回傳成功訊息給前端掃描器
+        res.json({ 
+          success: true, 
+          name: name, 
+          user_type: user_type 
+        });
+      });
+    });
   });
-});
-// 6. 啟動伺服器
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
 });
