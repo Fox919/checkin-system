@@ -8,19 +8,22 @@ dotenv.config(); // 2. 必須執行 config() 才會讀取變數
 const app = express();
 
 
-// --- 萬用 CORS 手動攔截器 (這段必須在最前面) ---
+// --- 萬用 CORS 手動攔截器 (針對 Railway 與 Vercel 的環境優化) ---
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*"); // 測試期間先用 *，通了再改回特定網址
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  // 設置允許來源為 * 是最保險的，確認連通後再改回特定網址
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
+  // 必須包含 Content-Type，因為前端 fetch 使用了它
+  res.setHeader("Access-Control-Allow-Headers", "X-Requested-With, Content-Type, Authorization");
+  // 允許瀏覽器發送憑證（如果需要）
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 
+  // 核心：立即攔截並回覆 OPTIONS 請求
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    return res.status(200).json({}); 
   }
   next();
-});
-
-app.use(express.json());
+});app.use(express.json());
 
 // 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
 const db = mysql.createConnection({
@@ -96,4 +99,17 @@ app.post("/checkin/:id", (req, res) => {
       });
     });
   });
+});
+
+// 增加一個測試路由，讓你可以在瀏覽器輸入網址直接測試
+app.get("/", (req, res) => {
+  res.json({ message: "後端 API 正常運作中！", database: "已連線" });
+});
+
+
+
+const PORT = process.env.PORT || 5000; // Railway 會自動分配 PORT
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`伺服器正運行在 Port: ${PORT}`);
 });
