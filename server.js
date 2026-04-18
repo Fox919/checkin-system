@@ -80,7 +80,7 @@ app.post("/checkin/:id", (req, res) => {
 
       // 3. 寫入 checkins 歷史紀錄表 (留下時間足跡)
       // 使用 NOW() 讓資料庫自動填入當前時間
-      const insertCheckinSql = "INSERT INTO checkins (user_id, checkin_time) VALUES (?, NOW())";
+      const insertCheckinSql = "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())";
       
       db.query(insertCheckinSql, [userId], (insertErr) => {
         if (insertErr) {
