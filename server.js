@@ -8,10 +8,13 @@ dotenv.config(); // 2. 必須執行 config() 才會讀取變數
 
 const app = express();
 app.use(cors({
-  origin: '*', // 允許所有網域存取，或者填寫你的 Vercel 網址
-  methods: ['GET', 'POST', 'OPTIONS'], // 明確允許 OPTIONS 預檢請求
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: 'https://checkin-frontend-taupe.vercel.app', // 建議填寫你前端的正確網址
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
+// 2. 額外手動處理 OPTIONS 請求 (這是針對某些環境下 CORS 套件失效的保險)
+app.options('*', cors());
 app.use(express.json());
 
 // 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
