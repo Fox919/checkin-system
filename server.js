@@ -1,7 +1,7 @@
 import express from 'express';
 import mysql from 'mysql2';
 import dotenv from 'dotenv';
-
+import * as XLSX from 'xlsx'; // 這樣可以確保所有工具函數都能正確讀取
 dotenv.config();
 
 const app = express();
@@ -107,7 +107,117 @@ app.post("/checkin/:id", (req, res) => {
   });
 });
 
+// 1. 獲取所有簽到名單 (JSON 格式，給網頁表格用)
+app.get("/admin/checkins", (req, res) => {
+  const sql = `
+    SELECT 
+      c.id, 
+      u.name, 
+      u.phone, 
+      u.user_type, 
+      c.checkin_time 
+    FROM checkins c
+    JOIN users u ON c.user_id = u.id
+    ORDER BY c.checkin_time DESC
+  `;
 
+  db.query(sql, (err, rows) => {
+    if (err) return res.status(500).json({ error: "資料讀取失敗" });
+    res.json(rows);
+  });
+});
+
+// 2. 導出 Excel API
+app.get("/admin/export-excel", (req, res) => {
+  const sql = `
+    SELECT 
+      u.name AS '姓名', 
+      u.phone AS '電話', 
+      u.user_type AS '身份', 
+      c.checkin_time AS '簽到時間' 
+    FROM checkins c
+    JOIN users u ON c.user_id = u.id
+    ORDER BY c.checkin_time DESC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) return res.status(500).send("導出失敗");
+
+    // 創建工作表
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "簽到名單");
+
+    // 生成 Buffer
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
+
+    // 設定下載標頭
+    res.setHeader('Content-Disposition', 'attachment; filename=checkin_list.xlsx');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(excelBuffer);
+  });
+});
+第三步：前端建立 AdminList.js 頁面
+你可以建立一個新的 React 元件來顯示這些數據。
+
+JavaScript
+import React, { useEffect, useState } from 'react';
+
+const AdminList = () => {
+  const [list, setList] = useState([]);
+
+  // 獲取名單
+  const fetchList = async () => {
+    try {
+      const res = await fetch('https://checkin-system-production-2a74.up.railway.app/admin/checkins');
+      const data = await res.json();
+      setList(data);
+    } catch (err) {
+      console.error("讀取失敗", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchList();
+  }, []);
+
+  const handleExport = () => {
+    // 直接導向下載連結
+    window.location.href = 'https://checkin-system-production-2a74.up.railway.app/admin/export-excel';
+  };
+
+  return (
+    <div style={{ padding: '20px' }}>
+      <h2>管理後台 - 簽到名單</h2>
+      <button onClick={handleExport} style={{ marginBottom: '20px', padding: '10px', background: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>
+        導出 Excel 表格
+      </button>
+
+      <table border="1" cellPadding="10" style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ background: '#eee' }}>
+            <th>姓名</th>
+            <th>電話</th>
+            <th>身份</th>
+            <th>簽到時間</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((item) => (
+            <tr key={item.id}>
+              <td>{item.name}</td>
+              <td>{item.phone}</td>
+              <td>{item.user_type}</td>
+              <td>{new Date(item.checkin_time).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+export default AdminList;
 
 app.get("/", (req, res) => {
   res.json({ message: "後端 API 正常運作中！", database: "已連線" });
