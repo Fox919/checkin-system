@@ -7,14 +7,20 @@ import dotenv from 'dotenv'; // 1. 確保有引入 dotenv
 dotenv.config(); // 2. 必須執行 config() 才會讀取變數
 
 const app = express();
-app.use(cors({
-  origin: 'https://checkin-frontend-taupe.vercel.app', // 建議填寫你前端的正確網址
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-// 2. 額外手動處理 OPTIONS 請求 (這是針對某些環境下 CORS 套件失效的保險)
-app.options('(.*)', cors());
+
+
+// --- 終極 CORS 手動攔截器 (放在所有 app.post 之前) ---
+app.use((req, res, next) => {
+  // 允許你的前端網址訪問
+  res.header("Access-Control-Allow-Origin", "https://checkin-frontend-taupe.vercel.app");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  
+  // 關鍵：如果請求方法是 OPTIONS，直接回傳 200，不要進入後面的路由
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
 app.use(express.json());
 
 // 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
