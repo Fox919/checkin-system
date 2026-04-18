@@ -14,7 +14,7 @@ app.use(cors({
   credentials: true
 }));
 // 2. 額外手動處理 OPTIONS 請求 (這是針對某些環境下 CORS 套件失效的保險)
-app.options('*', cors());
+app.options('(.*)', cors());
 app.use(express.json());
 
 // 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
