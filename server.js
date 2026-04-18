@@ -7,7 +7,11 @@ import dotenv from 'dotenv'; // 1. 確保有引入 dotenv
 dotenv.config(); // 2. 必須執行 config() 才會讀取變數
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*', // 允許所有網域存取，或者填寫你的 Vercel 網址
+  methods: ['GET', 'POST', 'OPTIONS'], // 明確允許 OPTIONS 預檢請求
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
