@@ -157,8 +157,6 @@ app.get("/admin/export-excel", (req, res) => {
     res.send(excelBuffer);
   });
 });
-第三步：前端建立 AdminList.js 頁面
-你可以建立一個新的 React 元件來顯示這些數據。
 
 JavaScript
 import React, { useEffect, useState } from 'react';
