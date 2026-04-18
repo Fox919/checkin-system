@@ -1,7 +1,6 @@
 // 1. 引入必要的套件
 import express from 'express';
 import mysql from 'mysql2';
-import cors from 'cors';
 import dotenv from 'dotenv'; // 1. 確保有引入 dotenv
 
 dotenv.config(); // 2. 必須執行 config() 才會讀取變數
@@ -9,25 +8,18 @@ dotenv.config(); // 2. 必須執行 config() 才會讀取變數
 const app = express();
 
 
-// --- 萬用 CORS 手動攔截器 ---
+// --- 萬用 CORS 手動攔截器 (這段必須在最前面) ---
 app.use((req, res, next) => {
-  // 設置允許訪問的來源 (建議指定你的 Vercel 網址，或用 * 代表全部)
-  res.setHeader("Access-Control-Allow-Origin", "https://checkin-frontend-taupe.vercel.app");
-  
-  // 設置允許的 HTTP 方法
+  res.setHeader("Access-Control-Allow-Origin", "*"); // 測試期間先用 *，通了再改回特定網址
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
-  
-  // 設置允許的標頭內容
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
-  // 核心：處理瀏覽器的 OPTIONS 預檢請求
   if (req.method === "OPTIONS") {
-    // 預檢請求直接回傳 200，不要往下走進入路由
     return res.status(200).end();
   }
-
   next();
 });
+
 app.use(express.json());
 
 // 3. 檢查這裡的變數名稱是否跟 Railway 後台的 Variables 一模一樣
