@@ -49,34 +49,42 @@ app.post("/register", (req, res) => {
   });
 });
 
+
+
+
 // --- 簽到路由 (已加入防重複機制) ---
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
 
-  // 1. 【優化】先檢查該用戶是否在 5 秒內已經有簽到紀錄
-  const checkDuplicateSql = `
-    SELECT id FROM checkins 
-    WHERE user_id = ? AND checkin_time > NOW() - INTERVAL 5 SECOND
-  `;
+  // 1. 先查出用戶資料（確保無論是否重複，都能回傳正確的名字）
+  const findUserSql = "SELECT name, user_type FROM users WHERE id = ?";
+  db.query(findUserSql, [userId], (err, rows) => {
+    if (err) return res.status(500).json({ error: "數據庫查詢失敗" });
+    if (rows.length === 0) return res.status(404).json({ error: "找不到此用戶" });
 
-  db.query(checkDuplicateSql, [userId], (err, recentRows) => {
-    if (err) return res.status(500).json({ error: "查重失敗" });
-    
-    // 如果 5 秒內已有紀錄，直接回傳成功，不再寫入
-    if (recentRows.length > 0) {
-      console.log(`⚠️ 偵測到重複掃描 (ID: ${userId})，已跳過重複寫入`);
-      return res.json({ success: true, message: "重複掃描，已跳過" });
-    }
+    const { name, user_type } = rows[0];
 
-    // 2. 檢查用戶是否存在
-    const findUserSql = "SELECT name, user_type FROM users WHERE id = ?";
-    db.query(findUserSql, [userId], (err, rows) => {
-      if (err) return res.status(500).json({ error: "數據庫查詢失敗" });
-      if (rows.length === 0) return res.status(404).json({ error: "找不到此用戶" });
+    // 2. 檢查 5 秒內是否重複簽到
+    const checkDuplicateSql = `
+      SELECT id FROM checkins 
+      WHERE user_id = ? AND checkin_time > NOW() - INTERVAL 5 SECOND
+    `;
 
-      const { name, user_type } = rows[0];
+    db.query(checkDuplicateSql, [userId], (err, recentRows) => {
+      if (err) return res.status(500).json({ error: "查重失敗" });
+      
+      if (recentRows.length > 0) {
+        console.log(`⚠️ 重複掃描已跳過: ${name}`);
+        // 重點：重複時也要回傳 name，前端才不會顯示 undefined
+        return res.json({ 
+          success: true, 
+          name: name, 
+          user_type: user_type, 
+          message: "請勿重複掃描" 
+        });
+      }
 
-      // 3. 更新 users 狀態並寫入 checkins (建議在正式環境使用 Transaction)
+      // 3. 正常簽到邏輯：更新狀態並寫入紀錄
       const updateUserSql = "UPDATE users SET status = 'checked-in' WHERE id = ?";
       db.query(updateUserSql, [userId], (updateErr) => {
         if (updateErr) return res.status(500).json({ error: "更新狀態失敗" });
@@ -84,16 +92,22 @@ app.post("/checkin/:id", (req, res) => {
         const insertCheckinSql = "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())";
         db.query(insertCheckinSql, [userId], (insertErr) => {
           if (insertErr) {
-            console.error("❌ 寫入 checkins 紀錄失敗:", insertErr);
-          } else {
-            console.log(`✅ 已為 ${name} 新增一筆簽到紀錄`);
+            console.error("❌ 寫入 checkins 失敗:", insertErr);
           }
-          res.json({ success: true, name: name, user_type: user_type });
+          
+          // 正常簽到回傳
+          res.json({ 
+            success: true, 
+            name: name, 
+            user_type: user_type 
+          });
         });
       });
     });
   });
 });
+
+
 
 app.get("/", (req, res) => {
   res.json({ message: "後端 API 正常運作中！", database: "已連線" });
