@@ -38,17 +38,37 @@ db.connect((err) => {
   console.log('✅ 成功連進 Railway MySQL 資料庫！');
 });
 
-// --- 註冊路由 ---
+
+
+// --- 註冊路由 (最終精簡版) ---
 app.post("/register", (req, res) => {
-  const { name, phone, user_type } = req.body;
+  const { name, phone, user_type, email, lang } = req.body;
+
+  // 產生 QR Code
   const qr_code = `QR_${phone}_${Date.now()}`;
-  const sql = "INSERT INTO users (name, phone, user_type, qr_code) VALUES (?, ?, ?, ?)";
   
-  db.query(sql, [name, phone, user_type, qr_code], (err, result) => {
-    if (err) return res.status(500).json({ error: "登記失敗" });
-    res.json({ success: true, id: result.insertId, qr_code: qr_code });
+  // 處理 Email：如果是空字串或未定義，則存為 null
+  const emailToSave = (email && email.trim() !== '') ? email : null;
+
+  // 執行 SQL：不需要手動加入 status，資料庫會自動填入 'active'
+  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang) 
+               VALUES (?, ?, ?, ?, ?, ?)`;
+  
+  db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang], (err, result) => {
+    if (err) {
+      console.error("登記錯誤:", err);
+      return res.status(500).json({ error: "登記失敗，請檢查輸入資料" });
+    }
+    
+    res.json({ 
+      success: true, 
+      id: result.insertId, 
+      qr_code: qr_code 
+    });
   });
 });
+
+
 
 // --- 簽到路由 (已加入防重複機制) ---
 app.post("/checkin/:id", (req, res) => {
