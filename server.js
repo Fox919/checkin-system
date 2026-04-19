@@ -133,25 +133,40 @@ app.get("/admin/checkins", (req, res) => {
 
 // --- 管理 API：導出 Excel ---
 app.get("/admin/export-excel", (req, res) => {
-  const sql = `
+  const filterDate = req.query.date; // 接收前端傳來的日期參數
+  
+  let sql = `
     SELECT u.name AS '姓名', u.phone AS '電話', u.user_type AS '身份', c.checkin_time AS '簽到時間' 
     FROM checkins c
     JOIN users u ON c.user_id = u.id
-    ORDER BY c.checkin_time DESC
   `;
-  db.query(sql, (err, rows) => {
-    if (err) return res.status(500).send("導出失敗");
+  
+  const params = [];
+  
+  // 如果有選擇日期，就加上 WHERE 條件
+  if (filterDate) {
+    sql += ` WHERE DATE(c.checkin_time) = ?`;
+    params.push(filterDate);
+  }
+  
+  sql += ` ORDER BY c.checkin_time DESC`;
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error("導出錯誤:", err);
+      return res.status(500).send("導出失敗");
+    }
+    
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "簽到名單");
     const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
 
-    res.setHeader('Content-Disposition', 'attachment; filename=checkin_list.xlsx');
+    res.setHeader('Content-Disposition', `attachment; filename=checkin_list_${filterDate || 'all'}.xlsx`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(excelBuffer);
   });
 });
-
 // --- 基礎路由 ---
 app.get("/", (req, res) => {
   res.json({ message: "後端 API 正常運作中！", database: "已連線" });
