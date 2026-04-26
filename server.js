@@ -117,6 +117,20 @@ app.post("/checkin/:id", (req, res) => {
   });
 });
 
+// --- 新增：獲取所有註冊用戶 (供 Kiosk 使用) ---
+app.get("/users", (req, res) => {
+  const sql = "SELECT id, name, phone, user_type FROM users";
+  db.query(sql, (err, rows) => {
+    if (err) return res.status(500).json({ error: "讀取用戶清單失敗" });
+    res.json(rows);
+  });
+});
+
+
+
+
+
+
 // --- 管理 API：獲取名單 ---
 app.get("/admin/checkins", (req, res) => {
   const sql = `
