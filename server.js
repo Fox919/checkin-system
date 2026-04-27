@@ -41,17 +41,20 @@ db.connect((err) => {
 
 
 app.post("/register", (req, res) => {
-  const { name, phone, user_type, email, lang, autoCheckin, notes } = req.body; // 新增接收 autoCheckin
+  const { name, phone, user_type, email, lang, autoCheckin, notes } = req.body; 
 
   const qr_code = `QR_${phone}_${Date.now()}`;
   const emailToSave = (email && email.trim() !== '') ? email : null;
-
-  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang, notes) VALUES (?, ?, ?, ?, ?, ?,?)`;
   
- // 2. 修正：將 notes 加入參數陣列
+  // --- 請在這裡新增這一行，定義 noteToSave ---
+  const noteToSave = notes || ''; 
+
+  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+  
+  // 現在這裡就可以正確使用 noteToSave 了
   db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang, noteToSave], (err, result) => {
     if (err) {
-      console.error("註冊 SQL 錯誤:", err); // 加上這行方便除錯
+      console.error("註冊 SQL 錯誤:", err); 
       return res.status(500).json({ error: "登記失敗" });
     }
     
@@ -66,7 +69,6 @@ app.post("/register", (req, res) => {
     }
   });
 });
-
 // --- 簽到路由 (已加入防重複機制) ---
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
