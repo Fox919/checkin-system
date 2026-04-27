@@ -41,30 +41,31 @@ db.connect((err) => {
 
 
 app.post("/register", (req, res) => {
-  const { name, phone, user_type, email, lang, autoCheckin } = req.body; // 新增接收 autoCheckin
+  const { name, phone, user_type, email, lang, autoCheckin, notes } = req.body; // 新增接收 autoCheckin
 
   const qr_code = `QR_${phone}_${Date.now()}`;
   const emailToSave = (email && email.trim() !== '') ? email : null;
 
-  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang) VALUES (?, ?, ?, ?, ?, ?)`;
+  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang, notes) VALUES (?, ?, ?, ?, ?, ?,?)`;
   
-  db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang], (err, result) => {
-    if (err) return res.status(500).json({ error: "登記失敗" });
+ // 2. 修正：將 notes 加入參數陣列
+  db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang, noteToSave], (err, result) => {
+    if (err) {
+      console.error("註冊 SQL 錯誤:", err); // 加上這行方便除錯
+      return res.status(500).json({ error: "登記失敗" });
+    }
     
     const userId = result.insertId;
 
-    // --- 關鍵修改：只有當 autoCheckin 為 true 時，才執行簽到 ---
     if (autoCheckin) {
       db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId]);
       db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId]);
       res.json({ success: true, message: "已完成登記與簽到", id: userId });
     } else {
-      // 否則就只回傳註冊成功
       res.json({ success: true, message: "已完成登記", id: userId });
     }
   });
 });
-
 
 // --- 簽到路由 (已加入防重複機制) ---
 app.post("/checkin/:id", (req, res) => {
@@ -122,7 +123,25 @@ app.get("/users", (req, res) => {
   });
 });
 
+// 1. 新增：獲取所有註冊用戶清單 (用於後台名單頁面)
+app.get("/admin/users", (req, res) => {
+  const sql = "SELECT id, name, phone, user_type, email, notes, status FROM users ORDER BY id DESC";
+  db.query(sql, (err, rows) => {
+    if (err) return res.status(500).json({ error: "無法獲取用戶資料" });
+    res.json(rows);
+  });
+});
 
+// 2. 新增：更新用戶備註
+app.post("/admin/update-note", (req, res) => {
+  const { userId, note } = req.body;
+  const sql = "UPDATE users SET notes = ? WHERE id = ?";
+  
+  db.query(sql, [note, userId], (err, result) => {
+    if (err) return res.status(500).json({ error: "更新備註失敗" });
+    res.json({ success: true, message: "備註已更新" });
+  });
+});
 
 
 
