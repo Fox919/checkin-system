@@ -22,11 +22,20 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+
+console.log("--- 偵錯環境變數 ---");
+console.log("Host:", process.env.MYSQLHOST);
+console.log("Database (有底線):", process.env.MYSQL_DATABASE);
+console.log("Database (無底線):", process.env.MYSQLDATABASE);
+console.log("-------------------");
+
+
+
 const db = mysql.createConnection({
   host: process.env.MYSQLHOST,
   user: process.env.MYSQLUSER,
   password: process.env.MYSQLPASSWORD,
-  database: process.env.MYSQLDATABASE,
+  database: process.env.MYSQL_DATABASE,
   port: process.env.MYSQLPORT || 3306
 });
 
