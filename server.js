@@ -93,19 +93,28 @@ app.get("/users", (req, res) => {
 });
 
 app.get("/admin/users", (req, res) => {
-  db.query("SELECT id, name, phone, user_type, email, notes, status FROM users ORDER BY id DESC", (err, rows) => {
-    if (err) return res.status(500).json({ error: "讀取失敗" });
+  // 這裡加入 LEFT JOIN，把 users 和 checkins 串接起來
+  // 如果你有 created_at 欄位，請確保它也在 SELECT 中
+  const sql = `
+    SELECT 
+      u.id, u.name, u.phone, u.user_type, u.email, u.notes, u.status, u.created_at,
+      MAX(c.checkin_date) as checkin_date
+    FROM users u
+    LEFT JOIN checkins c ON u.id = c.user_id
+    GROUP BY u.id
+    ORDER BY u.id DESC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("查詢錯誤:", err);
+      return res.status(500).json({ error: "讀取失敗" });
+    }
     res.json(rows);
   });
 });
 
-app.post("/admin/update-note", (req, res) => {
-  const { userId, note } = req.body;
-  db.query("UPDATE users SET notes = ? WHERE id = ?", [note, userId], (err) => {
-    if (err) return res.status(500).json({ error: "更新失敗" });
-    res.json({ success: true, message: "備註已更新" });
-  });
-});
+
 
 // 管理員：獲取簽到
 app.get("/admin/checkins", (req, res) => {
