@@ -11,7 +11,7 @@ const app = express();
 // --- Middleware 設定 ---
 app.use(cors());
 app.use(express.json());
-
+//hfhfhfhfhg
 // --- 資料庫連線 (使用 Pool) ---
 const db = mysql.createPool({
   host: process.env.MYSQLHOST,
@@ -114,7 +114,7 @@ app.get("/admin/users", (req, res) => {
   });
 });
 
-//vxcvxcvxcv
+
 
 // 管理員：獲取簽到
 app.get("/admin/checkins", (req, res) => {
