@@ -40,34 +40,30 @@ db.connect((err) => {
 
 
 
-// --- 註冊路由 (最終精簡版) ---
 app.post("/register", (req, res) => {
-  const { name, phone, user_type, email, lang } = req.body;
+  const { name, phone, user_type, email, lang, autoCheckin } = req.body; // 新增接收 autoCheckin
 
-  // 產生 QR Code
   const qr_code = `QR_${phone}_${Date.now()}`;
-  
-  // 處理 Email：如果是空字串或未定義，則存為 null
   const emailToSave = (email && email.trim() !== '') ? email : null;
 
-  // 執行 SQL：不需要手動加入 status，資料庫會自動填入 'active'
-  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang) 
-               VALUES (?, ?, ?, ?, ?, ?)`;
+  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang) VALUES (?, ?, ?, ?, ?, ?)`;
   
   db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang], (err, result) => {
-    if (err) {
-      console.error("登記錯誤:", err);
-      return res.status(500).json({ error: "登記失敗，請檢查輸入資料" });
-    }
+    if (err) return res.status(500).json({ error: "登記失敗" });
     
-    res.json({ 
-      success: true, 
-      id: result.insertId, 
-      qr_code: qr_code 
-    });
+    const userId = result.insertId;
+
+    // --- 關鍵修改：只有當 autoCheckin 為 true 時，才執行簽到 ---
+    if (autoCheckin) {
+      db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId]);
+      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId]);
+      res.json({ success: true, message: "已完成登記與簽到", id: userId });
+    } else {
+      // 否則就只回傳註冊成功
+      res.json({ success: true, message: "已完成登記", id: userId });
+    }
   });
 });
-
 
 
 // --- 簽到路由 (已加入防重複機制) ---
