@@ -106,6 +106,26 @@ app.get("/users", (req, res) => {
   });
 });
 
+
+  // 新增這一段到 server.js
+app.post("/admin/update-note", (req, res) => {
+  const { userId, note } = req.body;
+
+  // SQL 指令：更新對應 ID 的用戶備註
+  const sql = "UPDATE users SET notes = ? WHERE id = ?";
+  
+  db.query(sql, [note, userId], (err, result) => {
+    if (err) {
+      console.error("更新備註 SQL 錯誤:", err);
+      return res.status(500).json({ error: "更新備註失敗" });
+    }
+    
+    res.json({ success: true, message: "備註已更新" });
+  });
+});
+
+
+
 app.get("/admin/users", (req, res) => {
   // 這裡加入 LEFT JOIN，把 users 和 checkins 串接起來
   // 如果你有 created_at 欄位，請確保它也在 SELECT 中
