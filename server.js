@@ -58,32 +58,40 @@ app.post("/register", (req, res) => {
 });
 
 // 簽到
+// 簽到
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
-  const findUserSql = "SELECT name, user_type FROM users WHERE id = ?";
-  db.query(findUserSql, [userId], (err, rows) => {
+
+  // 1. 先撈取用戶名稱，並且【檢查今天是否已經簽到過】
+  // 我們使用 checkin_date = CURDATE() 來確認今天是否已有紀錄
+  const checkSql = `
+    SELECT u.name, u.user_type, 
+    (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday
+    FROM users u WHERE u.id = ?
+  `;
+
+  db.query(checkSql, [userId, userId], (err, rows) => {
     if (err) return res.status(500).json({ error: "數據庫查詢失敗" });
     if (rows.length === 0) return res.status(404).json({ error: "找不到此用戶" });
 
-    const { name, user_type } = rows[0];
-    const checkDuplicateSql = `SELECT id FROM checkins WHERE user_id = ? AND checkin_time > NOW() - INTERVAL 5 SECOND`;
+    const { name, user_type, hasCheckedInToday } = rows[0];
 
-    db.query(checkDuplicateSql, [userId], (err, recentRows) => {
-      if (err) return res.status(500).json({ error: "查重失敗" });
-      if (recentRows.length > 0) {
-        return res.json({ success: true, name: name, user_type: user_type, message: "請勿重複掃描" });
-      }
+    // 2. 如果 hasCheckedInToday 大於 0，代表今天已經簽過到了
+    if (hasCheckedInToday > 0) {
+      return res.json({ success: false, message: "今天已經簽到過了，請勿重複簽到！" });
+    }
 
-      db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
-        if (updateErr) return res.status(500).json({ error: "更新狀態失敗" });
-        db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (insertErr) => {
-          res.json({ success: true, name: name, user_type: user_type });
-        });
+    // 3. 如果沒有簽到過，則執行簽到流程
+    db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
+      if (updateErr) return res.status(500).json({ error: "更新狀態失敗" });
+      
+      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (insertErr) => {
+        if (insertErr) return res.status(500).json({ error: "插入簽到紀錄失敗" });
+        res.json({ success: true, name: name, user_type: user_type, message: "簽到成功！" });
       });
     });
   });
 });
-
 // 獲取用戶清單
 app.get("/users", (req, res) => {
   db.query("SELECT id, name, phone, user_type FROM users", (err, rows) => {
