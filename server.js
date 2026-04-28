@@ -32,31 +32,37 @@ app.get('/', (req, res) => {
   res.status(200).send('Backend is running!');
 });
 
-// 註冊
+// 修改後的註冊路由
 app.post("/register", (req, res) => {
   const { name, phone, user_type, email, lang, autoCheckin, notes } = req.body; 
   const qr_code = `QR_${phone}_${Date.now()}`;
   const emailToSave = (email && email.trim() !== '') ? email : null;
   const noteToSave = notes || ''; 
-
-  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`;
   
-  db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang, noteToSave], (err, result) => {
+  // 決定預設狀態：如果是 autoCheckin 則為 'checked-in'，否則為 'active'
+  const initialStatus = autoCheckin ? 'checked-in' : 'active';
+
+  // 加入 status 欄位到 SQL 中
+  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+  
+  db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang, noteToSave, initialStatus], (err, result) => {
     if (err) {
       console.error("註冊 SQL 錯誤:", err); 
       return res.status(500).json({ error: "登記失敗" });
     }
+    
     const userId = result.insertId;
+    
+    // 如果是 autoCheckin，才需要額外插入簽到記錄
     if (autoCheckin) {
-      db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId]);
-      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId]);
-      res.json({ success: true, message: "已完成登記與簽到", id: userId });
+      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (err) => {
+         res.json({ success: true, message: "已完成登記與簽到", id: userId });
+      });
     } else {
       res.json({ success: true, message: "已完成登記", id: userId });
     }
   });
 });
-
 // 簽到
 // 簽到
 app.post("/checkin/:id", (req, res) => {
