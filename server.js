@@ -87,71 +87,65 @@ app.post("/register", (req, res) => {
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
 
-  // 1. 檢查用戶
-  db.query("SELECT name FROM users WHERE id = ?", [userId], (err, users) => {
-    if (err) return res.status(500).json({ success: false, message: "資料庫錯誤" });
-    if (users.length === 0) return res.status(404).json({ success: false, message: "找不到此用戶" });
+  const checkSql = `
+    SELECT u.name, u.user_type, 
+    (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday
+    FROM users u WHERE u.id = ?
+  `;
 
-    const name = users[0].name;
-    const today = new Date().toISOString().slice(0, 10);
+  db.query(checkSql, [userId, userId], (err, rows) => {
+    if (err) return res.status(500).json({ success: false, error: "數據庫查詢失敗" });
+    if (rows.length === 0) return res.status(404).json({ success: false, error: "找不到此用戶" });
 
-    // 2. 檢查重複簽到
-    db.query("SELECT * FROM checkins WHERE user_id=? AND checkin_date=?", [userId, today], (err, rows) => {
-      if (rows.length > 0) {
-        // 修正：統一使用 success: false 並給出 message
-        return res.json({ success: false, message: "您今天已經簽到過了！" });
-      }
+    const { name, user_type, hasCheckedInToday } = rows[0];
 
-      // 3. 寫入簽到
-      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), ?)", [userId, today], (err) => {
-        if (err) return res.status(500).json({ success: false, message: "簽到失敗" });
-        
-        // 修正：成功時也帶上 success: true
-        res.json({ success: true, message: "簽到成功", name: name });
+    if (hasCheckedInToday > 0) {
+      return res.status(200).json({ success: false, message: "今天已經簽到過了，請勿重複簽到！" });
+    }
+
+    db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
+      if (updateErr) return res.status(500).json({ success: false, error: "更新狀態失敗" });
+      
+      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (insertErr) => {
+        if (insertErr) return res.status(500).json({ success: false, error: "插入簽到紀錄失敗" });
+        res.json({ success: true, name: name, user_type: user_type, message: "簽到成功！" });
       });
     });
   });
+});
 
-
-
-});});// --- 新增：電話後四碼搜尋路由 ---
+// --- 新增：電話後四碼搜尋路由 ---
 app.get("/search-by-phone/:lastFour", (req, res) => {
   const lastFour = req.params.lastFour;
 
-  // 驗證輸入是否為 4 位數字
   if (!/^\d{4}$/.test(lastFour)) {
-    return res.status(400).json({ error: "請輸入正確的 4 位電話號碼" });
+    return res.status(400).json({ success: false, error: "請輸入正確的 4 位電話號碼" });
   }
 
-  // SQL: 尋找電話結尾匹配這 4 碼的人
   const sql = "SELECT id, name, user_type FROM users WHERE phone LIKE ?";
   
   db.query(sql, [`%${lastFour}`], (err, rows) => {
     if (err) {
       console.error("搜尋 SQL 錯誤:", err);
-      return res.status(500).json({ error: "伺服器搜尋失敗" });
+      return res.status(500).json({ success: false, error: "伺服器搜尋失敗" });
     }
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: "找不到匹配的登記資料" });
+      return res.status(404).json({ success: false, error: "找不到匹配的登記資料" });
     }
 
-    // 如果匹配到多筆資料（後四碼剛好重複）
     if (rows.length > 1) {
-      return res.status(400).json({ 
-        error: `找到 ${rows.length} 筆重複資料，請輸入完整電話進行登記。` 
-      });
+      return res.status(400).json({ success: false, error: `找到 ${rows.length} 筆重複資料，請輸入完整電話。` });
     }
 
-    // 成功找到唯一匹配：回傳資料
     res.json({ 
+      success: true,
       id: rows[0].id, 
       name: rows[0].name, 
       user_type: rows[0].user_type 
     });
   });
 });
-
 
 // 獲取用戶清單
 app.get("/users", (req, res) => {
