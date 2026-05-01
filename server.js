@@ -37,24 +37,58 @@ app.get('/', (req, res) => {
 // 修改後的註冊路由
 // 修改後的註冊路由 (支援姓、名拆分)
 app.post("/register", (req, res) => {
-  // 1. 接收 lastName 和 firstName
-  const { lastName, firstName, phone, user_type, email, lang, autoCheckin, notes } = req.body; 
-  
-  const qr_code = `QR_${phone}_${Date.now()}`;
-  const emailToSave = (email && email.trim() !== '') ? email : null;
-  const noteToSave = notes || ''; 
-  
-  // 2. 自動組合全名，存入原本的 name 欄位，確保原本的簽到功能不用改
-  const fullName = `${lastName}${firstName}`; 
+  // 1. 接收所有新欄位
+  const { 
+    lastName, firstName, gender, phone, email, 
+    contact_method, lang, city, discovery_source, 
+    referrer_name, other_source_text, youtube_subscribed,
+    user_type, autoCheckin, notes 
+  } = req.body; 
 
-  // 決定預設狀態
+  // 2. 邏輯處理
+  const fullName = `${lastName}${firstName}`;
+  const qr_code = `QR_${phone}_${Date.now()}`;
+  
+  // 處理得知管道：如果是 "Other"，則存入說明文字
+  const finalSource = discovery_source === 'Other' ? other_source_text : discovery_source;
+  
+  // 處理 Email：如果是空字串則存 null
+  const emailToSave = (email && email.trim() !== '') ? email : null;
+  
+  // 決定預設狀態 (現場簽到 vs 預約登記)
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
 
-  // 3. 修改 SQL 指令，加入 last_name 和 first_name
-  const sql = `INSERT INTO users (last_name, first_name, name, phone, user_type, qr_code, email, lang, notes, status) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-  
-  db.query(sql, [lastName, firstName, fullName, phone, user_type, qr_code, emailToSave, lang, noteToSave, initialStatus], (err, result) => {
+  // 3. 準備完整的 SQL 指令
+  // 注意：請確保你已經執行了 ALTER TABLE 指令增加這些欄位
+  const sql = `
+    INSERT INTO users (
+      last_name, first_name, gender, name, phone, email, 
+      contact_method, lang, city, discovery_source, 
+      referrer_name, youtube_subscribed, user_type, 
+      qr_code, notes, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  const params = [
+    lastName, 
+    firstName, 
+    gender, 
+    fullName, 
+    phone, 
+    emailToSave, 
+    contact_method, 
+    lang, 
+    city, 
+    finalSource, 
+    referrer_name || null, 
+    youtube_subscribed ? 1 : 0, // MySQL 中 BOOLEAN 存為 1 或 0
+    user_type, 
+    qr_code, 
+    notes || '', 
+    initialStatus
+  ];
+
+  db.query(sql, params, (err, result) => {
     if (err) {
       if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
         return res.status(409).json({ 
@@ -63,11 +97,12 @@ app.post("/register", (req, res) => {
         });
       }
       console.error("註冊 SQL 錯誤:", err); 
-      return res.status(500).json({ error: "登記失敗" });
+      return res.status(500).json({ error: "登記失敗", detail: err.message });
     }
     
     const userId = result.insertId;
     
+    // 4. 自動簽到邏輯 (如果是現場登記)
     if (autoCheckin) {
       db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (err) => {
         if (err) {
@@ -81,7 +116,6 @@ app.post("/register", (req, res) => {
     }
   });
 });
-
 
 
 // 簽到路由修正版
