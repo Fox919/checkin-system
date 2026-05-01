@@ -116,6 +116,47 @@ app.post("/checkin/:id", (req, res) => {
     });
   });
 });
+
+
+// --- 新增：電話後四碼搜尋路由 ---
+app.get("/search-by-phone/:lastFour", (req, res) => {
+  const lastFour = req.params.lastFour;
+
+  // 驗證輸入是否為 4 位數字
+  if (!/^\d{4}$/.test(lastFour)) {
+    return res.status(400).json({ error: "請輸入正確的 4 位電話號碼" });
+  }
+
+  // SQL: 尋找電話結尾匹配這 4 碼的人
+  const sql = "SELECT id, name, user_type FROM users WHERE phone LIKE ?";
+  
+  db.query(sql, [`%${lastFour}`], (err, rows) => {
+    if (err) {
+      console.error("搜尋 SQL 錯誤:", err);
+      return res.status(500).json({ error: "伺服器搜尋失敗" });
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "找不到匹配的登記資料" });
+    }
+
+    // 如果匹配到多筆資料（後四碼剛好重複）
+    if (rows.length > 1) {
+      return res.status(400).json({ 
+        error: `找到 ${rows.length} 筆重複資料，請輸入完整電話進行登記。` 
+      });
+    }
+
+    // 成功找到唯一匹配：回傳資料
+    res.json({ 
+      id: rows[0].id, 
+      name: rows[0].name, 
+      user_type: rows[0].user_type 
+    });
+  });
+});
+
+
 // 獲取用戶清單
 app.get("/users", (req, res) => {
   db.query("SELECT id, name, phone, user_type FROM users", (err, rows) => {
