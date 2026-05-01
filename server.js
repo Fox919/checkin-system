@@ -35,54 +35,55 @@ app.get('/', (req, res) => {
 
 
 // 修改後的註冊路由
+// 修改後的註冊路由 (支援姓、名拆分)
 app.post("/register", (req, res) => {
-  const { name, phone, user_type, email, lang, autoCheckin, notes } = req.body; 
+  // 1. 接收 lastName 和 firstName
+  const { lastName, firstName, phone, user_type, email, lang, autoCheckin, notes } = req.body; 
+  
   const qr_code = `QR_${phone}_${Date.now()}`;
   const emailToSave = (email && email.trim() !== '') ? email : null;
   const noteToSave = notes || ''; 
   
+  // 2. 自動組合全名，存入原本的 name 欄位，確保原本的簽到功能不用改
+  const fullName = `${lastName}${firstName}`; 
+
   // 決定預設狀態
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
 
-  const sql = `INSERT INTO users (name, phone, user_type, qr_code, email, lang, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+  // 3. 修改 SQL 指令，加入 last_name 和 first_name
+  const sql = `INSERT INTO users (last_name, first_name, name, phone, user_type, qr_code, email, lang, notes, status) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
   
-  db.query(sql, [name, phone, user_type, qr_code, emailToSave, lang, noteToSave, initialStatus], (err, result) => {
+  db.query(sql, [lastName, firstName, fullName, phone, user_type, qr_code, emailToSave, lang, noteToSave, initialStatus], (err, result) => {
     if (err) {
-      // --- 核心修正：判斷重複登記 ---
       if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
-        console.log(`[重複攔截] 姓名: ${name}, 電話: ${phone}`);
-        // 回傳 409 Conflict 狀態碼與特定錯誤字串
         return res.status(409).json({ 
           error: "already_registered", 
-          message: "此姓名與電話組合已登記過" 
+          message: "此電話號碼已登記過" 
         });
       }
-
       console.error("註冊 SQL 錯誤:", err); 
       return res.status(500).json({ error: "登記失敗" });
     }
     
     const userId = result.insertId;
     
-    // 如果是 autoCheckin，才需要額外插入簽到記錄
     if (autoCheckin) {
       db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (err) => {
         if (err) {
             console.error("自動簽到 SQL 錯誤:", err);
-            // 即使簽到失敗，登記其實已經成功了
-            return res.json({ success: true, message: "登記成功但自動簽到失敗", id: userId });
+            return res.json({ success: true, message: "登記成功但自動簽到失敗", id: userId, name: fullName });
         }
-        res.json({ success: true, message: "已完成登記與簽到", id: userId });
+        res.json({ success: true, message: "已完成登記與簽到", id: userId, name: fullName });
       });
     } else {
-      res.json({ success: true, message: "已完成登記", id: userId });
+      res.json({ success: true, message: "已完成登記", id: userId, name: fullName });
     }
   });
 });
 
 
-// 簽到
-// 簽到
+
 // 簽到路由修正版
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
@@ -100,7 +101,11 @@ app.post("/checkin/:id", (req, res) => {
     const { name, user_type, hasCheckedInToday } = rows[0];
 
     if (hasCheckedInToday > 0) {
-      return res.status(200).json({ success: false, message: "今天已經簽到過了，請勿重複簽到！" });
+     // return res.status(200).json({ success: false, message: "今天已經簽到過了，請勿重複簽到！" });
+    return res.json({ 
+    success: false, 
+    message: "今天已經簽到過了，請勿重複簽到！" 
+  });
     }
 
     db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
