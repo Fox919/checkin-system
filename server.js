@@ -83,40 +83,39 @@ app.post("/register", (req, res) => {
 
 // 簽到
 // 簽到
-app.post("/checkin/:id", (req, res) => {
-  const userId = req.params.id;
+app.post("/checkin", (req, res) => {
+  const { qr_code } = req.body; // 這裡的 qr_code 實際上是前端傳來的 ID
 
-  // 1. 先撈取用戶名稱，並且【檢查今天是否已經簽到過】
-  // 我們使用 checkin_date = CURDATE() 來確認今天是否已有紀錄
-  const checkSql = `
-    SELECT u.name, u.user_type, 
-    (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday
-    FROM users u WHERE u.id = ?
-  `;
+  if (!qr_code) {
+    return res.status(400).json({ success: false, error: "缺少識別碼" });
+  }
 
-  db.query(checkSql, [userId, userId], (err, rows) => {
-    if (err) return res.status(500).json({ error: "數據庫查詢失敗" });
-    if (rows.length === 0) return res.status(404).json({ error: "找不到此用戶" });
+  // 修改：改為檢查 id (因為你目前的系統是以 id 作為 QR 內容)
+  db.query("SELECT id, name FROM users WHERE id = ?", [qr_code], (err, users) => {
+    if (err) return res.status(500).json({ success: false, error: "資料庫錯誤" });
+    if (users.length === 0) return res.status(404).json({ success: false, error: "找不到此用戶" });
 
-    const { name, user_type, hasCheckedInToday } = rows[0];
+    const user_id = users[0].id;
+    const name = users[0].name;
+    const today = new Date().toISOString().slice(0, 10);
 
-    // 2. 如果 hasCheckedInToday 大於 0，代表今天已經簽過到了
-    if (hasCheckedInToday > 0) {
-      return res.json({ success: false, message: "今天已經簽到過了，請勿重複簽到！" });
-    }
+    // 檢查是否簽到
+    db.query("SELECT * FROM checkins WHERE user_id=? AND checkin_date=?", [user_id, today], (err, rows) => {
+      if (rows && rows.length > 0) {
+        // 重點：統一回傳結構
+        return res.json({ success: false, message: "今天已簽到過了" });
+      }
 
-    // 3. 如果沒有簽到過，則執行簽到流程
-    db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
-      if (updateErr) return res.status(500).json({ error: "更新狀態失敗" });
-      
-      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (insertErr) => {
-        if (insertErr) return res.status(500).json({ error: "插入簽到紀錄失敗" });
-        res.json({ success: true, name: name, user_type: user_type, message: "簽到成功！" });
+      // 寫入簽到
+      db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), ?)", [user_id, today], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "寫入失敗" });
+        
+        // 成功回傳
+        res.json({ success: true, message: "簽到成功", name: name });
       });
     });
   });
 });
-
 
 // --- 新增：電話後四碼搜尋路由 ---
 app.get("/search-by-phone/:lastFour", (req, res) => {
