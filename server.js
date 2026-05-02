@@ -215,12 +215,13 @@ app.post("/admin/update-note", (req, res) => {
 
 
 app.get("/admin/users", (req, res) => {
-  // 這裡加入 LEFT JOIN，把 users 和 checkins 串接起來
-  // 如果你有 created_at 欄位，請確保它也在 SELECT 中
   const sql = `
     SELECT 
-      u.id, u.name, u.phone, u.user_type, u.email, u.notes, u.status, u.created_at,
-      MAX(c.checkin_date) as checkin_date
+      u.id, u.last_name, u.first_name, u.gender, u.name, u.phone, 
+      u.user_type, u.email, u.contact_method, u.city, 
+      u.discovery_source, u.referrer_name, u.youtube_subscribed,
+      u.notes, u.status, u.receptionist_name, u.created_at,
+      MAX(c.checkin_date) as last_checkin_date
     FROM users u
     LEFT JOIN checkins c ON u.id = c.user_id
     GROUP BY u.id
@@ -233,6 +234,20 @@ app.get("/admin/users", (req, res) => {
       return res.status(500).json({ error: "讀取失敗" });
     }
     res.json(rows);
+  });
+});
+// 更新接待人員名稱
+app.put("/api/users/:id/receptionist", (req, res) => {
+  const userId = req.params.id;
+  const { receptionistName } = req.body;
+
+  const sql = "UPDATE users SET receptionist_name = ? WHERE id = ?";
+  db.query(sql, [receptionistName, userId], (err, result) => {
+    if (err) {
+      console.error("更新接待人員錯誤:", err);
+      return res.status(500).json({ error: "伺服器錯誤" });
+    }
+    res.json({ success: true, message: "接待人員已確認" });
   });
 });
 
@@ -250,7 +265,19 @@ app.get("/admin/checkins", (req, res) => {
 // 管理員：導出 Excel
 app.get("/admin/export-excel", (req, res) => {
   const filterDate = req.query.date;
-  let sql = `SELECT u.name AS '姓名', u.phone AS '電話', u.user_type AS '身份', c.checkin_time AS '簽到時間' FROM checkins c JOIN users u ON c.user_id = u.id`;
+  let sql = `
+    SELECT 
+      u.last_name AS '姓', u.first_name AS '名', u.gender AS '性別', 
+      u.name AS '全名', u.phone AS '電話', u.email AS '電子郵件', 
+      u.contact_method AS '聯繫偏好', u.city AS '居住城市', 
+      u.discovery_source AS '來源', u.referrer_name AS '介紹人',
+      IF(u.youtube_subscribed, '是', '否') AS '訂閱YouTube',
+      u.user_type AS '身份', u.notes AS '備註', 
+      u.receptionist_name AS '接待人員',
+      c.checkin_time AS '簽到時間' 
+    FROM checkins c 
+    JOIN users u ON c.user_id = u.id
+  `;
   const params = [];
   if (filterDate) { sql += ` WHERE DATE(c.checkin_time) = ?`; params.push(filterDate); }
   sql += ` ORDER BY c.checkin_time DESC`;
