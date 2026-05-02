@@ -69,6 +69,10 @@ app.post("/register", (req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
+  const contactMethodString = Array.isArray(contact_method) 
+    ? contact_method.join(',') 
+    : contact_method;
+
   const params = [
     lastName, 
     firstName, 
@@ -76,7 +80,7 @@ app.post("/register", (req, res) => {
     fullName, 
     phone, 
     emailToSave, 
-    contact_method, 
+    contactMethodString, 
     lang, 
     city, 
     finalSource, 
