@@ -176,20 +176,29 @@ app.post("/admin/update-note", (req, res) => {
 });
 
 // --- 6. 管理端：獲取用戶清單 ---
+// --- 6. 管理端：獲取用戶清單 ---
 app.get("/admin/users", (req, res) => {
   const sql = `
-    SELECT u.*, MAX(c.checkin_date) as last_checkin_date
+    SELECT 
+      u.id, u.last_name, u.first_name, u.gender, u.name, u.phone, 
+      u.user_type, u.email, u.contact_method, 
+      u.discovery_source, u.referrer_name,
+      u.notes, u.status, u.receptionist_name, u.created_at,
+      MAX(c.checkin_date) as last_checkin_date
     FROM users u
     LEFT JOIN checkins c ON u.id = c.user_id
     GROUP BY u.id
     ORDER BY u.id DESC
   `;
   db.query(sql, (err, rows) => {
-    if (err) return res.status(500).json({ error: "讀取失敗" });
+    if (err) {
+      console.error("查詢錯誤:", err);
+      return res.status(500).json({ error: "讀取失敗" });
+    }
     res.json(rows);
   });
 });
-
+// --- 7. 管理端：導出 Excel ---
 // --- 7. 管理端：導出 Excel ---
 app.get("/admin/export-excel", (req, res) => {
   const filterDate = req.query.date;
@@ -210,8 +219,12 @@ app.get("/admin/export-excel", (req, res) => {
     FROM checkins c 
     JOIN users u ON c.user_id = u.id
   `;
+  
   const params = [];
-  if (filterDate) { sql += ` WHERE DATE(c.checkin_time) = ?`; params.push(filterDate); }
+  if (filterDate) { 
+    sql += ` WHERE DATE(c.checkin_time) = ?`; 
+    params.push(filterDate); 
+  }
   sql += ` ORDER BY c.checkin_time DESC`;
 
   db.query(sql, params, (err, rows) => {
@@ -224,7 +237,6 @@ app.get("/admin/export-excel", (req, res) => {
     res.send(excelBuffer);
   });
 });
-
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
