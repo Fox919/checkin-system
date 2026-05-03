@@ -36,6 +36,36 @@ app.get('/', (req, res) => {
 
 // 修改後的註冊路由
 // 修改後的註冊路由 (支援姓、名拆分)
+// --- 新增：預檢 姓名+電話 是否重複 ---
+app.post("/check-duplicate", (req, res) => {
+  const { lastName, firstName, phone } = req.body;
+
+  if (!lastName || !firstName || !phone) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+
+  // 查詢資料庫中是否有這三項完全符合的紀錄
+  const sql = "SELECT id FROM users WHERE last_name = ? AND first_name = ? AND phone = ?";
+  
+  db.query(sql, [lastName, firstName, phone], (err, results) => {
+    if (err) {
+      console.error("預檢 SQL 錯誤:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length > 0) {
+      // 找到匹配，判定為重複
+      res.json({ isDuplicate: true });
+    } else {
+      // 沒有重複
+      res.json({ isDuplicate: false });
+    }
+  });
+});
+
+
+
+
 app.post("/register", (req, res) => {
   // 1. 接收所有新欄位
   const { 
