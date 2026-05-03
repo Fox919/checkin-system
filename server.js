@@ -31,6 +31,22 @@ app.get('/', (req, res) => {
   res.status(200).send('Backend is running!');
 });
 
+/**
+ * --- 新增：Kiosk 專用路由 ---
+ * 解決 Kiosk.js 一進頁面就報錯的問題。
+ * 抓取所有用戶的簡單資訊，用於前端快速比對搜尋。
+ */
+app.get("/users", (req, res) => {
+  const sql = "SELECT id, name, phone, user_type FROM users";
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("Kiosk 名單讀取錯誤:", err);
+      return res.status(500).json({ error: "讀取名單失敗" });
+    }
+    res.json(rows);
+  });
+});
+
 // --- 1. 預檢：姓名+電話 是否重複 ---
 app.post("/check-duplicate", (req, res) => {
   const { lastName, firstName, phone } = req.body;
@@ -77,22 +93,9 @@ app.post("/register", (req, res) => {
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : contact_method;
 
   const params = [
-    lastName, 
-    firstName, 
-    gender,           // 接收 "Male", "Female" 或 "Other"
-    fullName, 
-    phone, 
-    emailToSave, 
-    contactMethodString, 
-    lang, 
-    '',               // city: 已取消輸入，存入空字串
-    finalSource, 
-    referrer_name || null, 
-    0,                // youtube_subscribed: 已取消，預設 0
-    user_type, 
-    qr_code, 
-    notes || '', 
-    initialStatus
+    lastName, firstName, gender, fullName, phone, emailToSave, 
+    contactMethodString, lang, '', finalSource, referrer_name || null, 
+    0, user_type, qr_code, notes || '', initialStatus
   ];
 
   db.query(sql, params, (err, result) => {
@@ -149,21 +152,13 @@ app.post("/checkin/:id", (req, res) => {
   });
 });
 
-// --- 4. 電話後四碼搜尋 ---
-// --- 修正版：電話後四碼搜尋路由 ---
+// --- 4. 電話後四碼搜尋路由 (用於後端驗證/備用) ---
 app.get("/search-by-phone/:lastFour", (req, res) => {
   const lastFour = req.params.lastFour;
-
-  // 1. 驗證輸入是否為 4 位數字
   if (!/^\d{4}$/.test(lastFour)) {
     return res.status(400).json({ success: false, error: "請輸入正確的 4 位電話號碼" });
   }
 
-  /**
-   * 2. SQL 優化說明：
-   * 使用 REPLACE 移除電話中的特殊符號，確保搜尋的是純數字。
-   * 使用 RIGHT(phone, 4) 直接比對最後四碼，效率比 LIKE 更高且準確。
-   */
   const sql = `
     SELECT id, name, user_type, phone 
     FROM users 
@@ -171,33 +166,14 @@ app.get("/search-by-phone/:lastFour", (req, res) => {
   `;
 
   db.query(sql, [lastFour], (err, rows) => {
-    if (err) {
-      console.error("搜尋 SQL 錯誤:", err);
-      return res.status(500).json({ success: false, error: "伺服器內部搜尋錯誤" });
-    }
+    if (err) return res.status(500).json({ success: false, error: "伺服器搜尋錯誤" });
+    if (rows.length === 0) return res.status(404).json({ success: false, error: "找不到符合的資料" });
+    if (rows.length > 1) return res.status(400).json({ success: false, error: `找到 ${rows.length} 筆重複資料` });
 
-    if (rows.length === 0) {
-      // 找不到資料
-      return res.status(404).json({ success: false, error: "找不到符合的資料，請重新輸入" });
-    }
-
-    if (rows.length > 1) {
-      // 如果有兩個人電話後四碼一樣，要求輸入更多資訊
-      return res.status(400).json({ 
-        success: false, 
-        error: `找到 ${rows.length} 筆重複資料，請改用 QR Code 或輸入完整電話。` 
-      });
-    }
-
-    // 成功找到唯一匹配
-    res.json({ 
-      success: true,
-      id: rows[0].id, 
-      name: rows[0].name, 
-      user_type: rows[0].user_type 
-    });
+    res.json({ success: true, id: rows[0].id, name: rows[0].name, user_type: rows[0].user_type });
   });
 });
+
 // --- 5. 管理端：更新備註 ---
 app.post("/admin/update-note", (req, res) => {
   const { userId, note } = req.body;
@@ -207,74 +183,5 @@ app.post("/admin/update-note", (req, res) => {
   });
 });
 
-// --- 6. 管理端：獲取用戶清單 ---
-// --- 6. 管理端：獲取用戶清單 ---
-app.get("/admin/users", (req, res) => {
-  const sql = `
-    SELECT 
-      u.id, u.last_name, u.first_name, u.gender, u.name, u.phone, 
-      u.user_type, u.email, u.contact_method, 
-      u.discovery_source, u.referrer_name,
-      u.notes, u.status, u.receptionist_name, u.created_at,
-      MAX(c.checkin_date) as last_checkin_date
-    FROM users u
-    LEFT JOIN checkins c ON u.id = c.user_id
-    GROUP BY u.id
-    ORDER BY u.id DESC
-  `;
-  db.query(sql, (err, rows) => {
-    if (err) {
-      console.error("查詢錯誤:", err);
-      return res.status(500).json({ error: "讀取失敗" });
-    }
-    res.json(rows);
-  });
-});
-// --- 7. 管理端：導出 Excel ---
-// --- 7. 管理端：導出 Excel ---
-app.get("/admin/export-excel", (req, res) => {
-  const filterDate = req.query.date;
-  let sql = `
-    SELECT 
-      u.last_name AS '姓', u.first_name AS '名', 
-      CASE 
-        WHEN u.gender = 'Male' THEN '男'
-        WHEN u.gender = 'Female' THEN '女'
-        ELSE '不便透露' 
-      END AS '性別',
-      u.name AS '全名', u.phone AS '電話', u.email AS '電子郵件', 
-      u.contact_method AS '聯繫偏好', 
-      u.discovery_source AS '來源', u.referrer_name AS '介紹人',
-      u.user_type AS '身份', u.notes AS '備註', 
-      u.receptionist_name AS '接待人員',
-      c.checkin_time AS '簽到時間' 
-    FROM checkins c 
-    JOIN users u ON c.user_id = u.id
-  `;
-  
-  const params = [];
-  if (filterDate) { 
-    sql += ` WHERE DATE(c.checkin_time) = ?`; 
-    params.push(filterDate); 
-  }
-  sql += ` ORDER BY c.checkin_time DESC`;
-
-  db.query(sql, params, (err, rows) => {
-    if (err) return res.status(500).send("導出失敗");
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "簽到名單");
-    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(excelBuffer);
-  });
-});
-// --- 啟動伺服器 ---
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ 伺服器運行在 Port: ${PORT}`);
-});
-
-process.on('SIGTERM', () => {
-  db.end(() => process.exit(0));
-});
+// --- 6. 管理端：獲取詳細用戶清單 ---
+app
