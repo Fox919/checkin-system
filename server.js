@@ -9,7 +9,14 @@ dotenv.config();
 const app = express();
 
 // --- Middleware 設定 ---
-app.use(cors());
+//app.use(cors());
+
+// 建議改用這個明確的設定
+app.use(cors({
+  origin: '*', // 允許所有網域存取，或者指定 'https://checkin-frontend-taupe.vercel.app'
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // --- 資料庫連線 (使用 Pool) ---
