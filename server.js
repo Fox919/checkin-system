@@ -150,22 +150,54 @@ app.post("/checkin/:id", (req, res) => {
 });
 
 // --- 4. 電話後四碼搜尋 ---
+// --- 修正版：電話後四碼搜尋路由 ---
 app.get("/search-by-phone/:lastFour", (req, res) => {
   const lastFour = req.params.lastFour;
+
+  // 1. 驗證輸入是否為 4 位數字
   if (!/^\d{4}$/.test(lastFour)) {
-    return res.status(400).json({ success: false, error: "請輸入正確的 4 位數字" });
+    return res.status(400).json({ success: false, error: "請輸入正確的 4 位電話號碼" });
   }
 
-  const sql = "SELECT id, name, user_type FROM users WHERE phone LIKE ?";
-  db.query(sql, [`%${lastFour}`], (err, rows) => {
-    if (err) return res.status(500).json({ success: false, error: "搜尋失敗" });
-    if (rows.length === 0) return res.status(404).json({ success: false, error: "找不到資料" });
-    if (rows.length > 1) return res.status(400).json({ success: false, error: `找到 ${rows.length} 筆重複資料，請輸入完整電話。` });
+  /**
+   * 2. SQL 優化說明：
+   * 使用 REPLACE 移除電話中的特殊符號，確保搜尋的是純數字。
+   * 使用 RIGHT(phone, 4) 直接比對最後四碼，效率比 LIKE 更高且準確。
+   */
+  const sql = `
+    SELECT id, name, user_type, phone 
+    FROM users 
+    WHERE RIGHT(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', ''), 4) = ?
+  `;
 
-    res.json({ success: true, id: rows[0].id, name: rows[0].name, user_type: rows[0].user_type });
+  db.query(sql, [lastFour], (err, rows) => {
+    if (err) {
+      console.error("搜尋 SQL 錯誤:", err);
+      return res.status(500).json({ success: false, error: "伺服器內部搜尋錯誤" });
+    }
+
+    if (rows.length === 0) {
+      // 找不到資料
+      return res.status(404).json({ success: false, error: "找不到符合的資料，請重新輸入" });
+    }
+
+    if (rows.length > 1) {
+      // 如果有兩個人電話後四碼一樣，要求輸入更多資訊
+      return res.status(400).json({ 
+        success: false, 
+        error: `找到 ${rows.length} 筆重複資料，請改用 QR Code 或輸入完整電話。` 
+      });
+    }
+
+    // 成功找到唯一匹配
+    res.json({ 
+      success: true,
+      id: rows[0].id, 
+      name: rows[0].name, 
+      user_type: rows[0].user_type 
+    });
   });
 });
-
 // --- 5. 管理端：更新備註 ---
 app.post("/admin/update-note", (req, res) => {
   const { userId, note } = req.body;
