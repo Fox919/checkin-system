@@ -9,11 +9,12 @@ dotenv.config();
 const app = express();
 
 // --- Middleware 設定 ---
-// 強化 CORS 設定，解決你遇到的 "No 'Access-Control-Allow-Origin' header" 錯誤
+// 強化 CORS： origin 設定為 true 會自動抓取請求來源，並允許它，這對 Vercel 最穩定
 app.use(cors({
-  origin: '*', // 測試階段允許所有來源。若要更安全可改為 'https://checkin-frontend-taupe.vercel.app'
+  origin: true, 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 app.use(express.json());
 
@@ -31,37 +32,38 @@ const db = mysql.createPool({
 
 // --- 路由 ---
 
-// 根目錄測試
+// 1. 根目錄測試
 app.get('/', (req, res) => {
-  res.status(200).send('Backend is running!');
+  res.status(200).send('✅ Check-in System API is running!');
 });
 
-// Kiosk 專用：獲取所有用戶簡要名單
+// 2. Kiosk 專用：獲取所有用戶簡要名單
 app.get("/users", (req, res) => {
-  const sql = "SELECT id, name, phone, user_type FROM users";
+  // 增加排序，讓最新加入的人顯示在前面
+  const sql = "SELECT id, name, phone, user_type FROM users ORDER BY id DESC";
   db.query(sql, (err, rows) => {
     if (err) {
       console.error("Kiosk 名單讀取錯誤:", err);
-      return res.status(500).json({ error: "讀取名單失敗" });
+      return res.status(500).json({ error: "伺服器讀取名單失敗" });
     }
     res.json(rows);
   });
 });
 
-// 1. 預檢：姓名+電話 是否重複
+// 3. 預檢：姓名+電話 是否重複 (註冊第一步)
 app.post("/check-duplicate", (req, res) => {
   const { lastName, firstName, phone } = req.body;
   if (!lastName || !firstName || !phone) {
-    return res.status(400).json({ error: "Missing fields" });
+    return res.status(400).json({ error: "請填寫完整姓名與電話" });
   }
   const sql = "SELECT id FROM users WHERE last_name = ? AND first_name = ? AND phone = ?";
   db.query(sql, [lastName, firstName, phone], (err, results) => {
-    if (err) return res.status(500).json({ error: "Database error" });
+    if (err) return res.status(500).json({ error: "資料庫查詢錯誤" });
     res.json({ isDuplicate: results.length > 0 });
   });
 });
 
-// 2. 註冊路由
+// 4. 註冊路由 (配合隱藏場景入口)
 app.post("/register", (req, res) => {
   const { 
     lastName, firstName, gender, phone, email, 
@@ -71,10 +73,14 @@ app.post("/register", (req, res) => {
   } = req.body; 
 
   const fullName = `${lastName}${firstName}`;
+  // 產生唯一的 QR Code 標記 (備用)
   const qr_code = `QR_${phone}_${Date.now()}`;
   const finalSource = discovery_source === 'Other' ? other_source_text : discovery_source;
   const emailToSave = (email && email.trim() !== '') ? email : null;
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
+  
+  // 預設身份邏輯：若前端沒傳 type，預設為 Visitor
+  const finalUserType = user_type || 'Visitor';
 
   const sql = `
     INSERT INTO users (
@@ -86,7 +92,11 @@ app.post("/register", (req, res) => {
   `;
 
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : contact_method;
-  const params = [lastName, firstName, gender, fullName, phone, emailToSave, contactMethodString, lang, '', finalSource, referrer_name || null, 0, user_type, qr_code, notes || '', initialStatus];
+  const params = [
+    lastName, firstName, gender, fullName, phone, emailToSave, 
+    contactMethodString, lang, '', finalSource, referrer_name || null, 
+    0, finalUserType, qr_code, notes || '', initialStatus
+  ];
 
   db.query(sql, params, (err, result) => {
     if (err) {
@@ -95,10 +105,14 @@ app.post("/register", (req, res) => {
       }
       return res.status(500).json({ error: "登記失敗", detail: err.message });
     }
+
     const userId = result.insertId;
+
+    // 如果開啟「註冊即簽到」
     if (autoCheckin) {
       db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (err) => {
-        res.json({ success: true, message: "已完成登記與簽到", id: userId, name: fullName });
+        if (err) console.error("自動簽到失敗:", err);
+        res.json({ success: true, message: "已完成登記與今日簽到", id: userId, name: fullName });
       });
     } else {
       res.json({ success: true, message: "已完成登記", id: userId, name: fullName });
@@ -106,14 +120,17 @@ app.post("/register", (req, res) => {
   });
 });
 
-// 3. 簽到路由
+// 5. 簽到路由 (手動點擊簽到)
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
+  
+  // 先檢查今天是否簽到過
   const checkSql = `
     SELECT u.name, u.user_type, 
     (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday
     FROM users u WHERE u.id = ?
   `;
+  
   db.query(checkSql, [userId, userId], (err, rows) => {
     if (err) return res.status(500).json({ success: false, error: "數據庫查詢失敗" });
     if (rows.length === 0) return res.status(404).json({ success: false, error: "找不到此用戶" });
@@ -121,41 +138,17 @@ app.post("/checkin/:id", (req, res) => {
     const { name, user_type, hasCheckedInToday } = rows[0];
     if (hasCheckedInToday > 0) return res.json({ success: false, message: "今天已經簽到過了！" });
 
+    // 更新用戶狀態並插入簽到紀錄
     db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
       db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (insertErr) => {
+        if (insertErr) return res.status(500).json({ success: false, error: "簽到紀錄寫入失敗" });
         res.json({ success: true, name, user_type, message: "簽到成功！" });
       });
     });
   });
 });
 
-// 4. 電話後四碼搜尋
-app.get("/search-by-phone/:lastFour", (req, res) => {
-  const lastFour = req.params.lastFour;
-  if (!/^\d{4}$/.test(lastFour)) return res.status(400).json({ success: false, error: "請輸入 4 位數字" });
-
-  const sql = `
-    SELECT id, name, user_type, phone FROM users 
-    WHERE RIGHT(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', ''), 4) = ?
-  `;
-  db.query(sql, [lastFour], (err, rows) => {
-    if (err) return res.status(500).json({ error: "搜尋失敗" });
-    if (rows.length === 0) return res.status(404).json({ error: "找不到符合資料" });
-    if (rows.length > 1) return res.status(400).json({ error: `找到 ${rows.length} 筆重複資料` });
-    res.json({ success: true, ...rows[0] });
-  });
-});
-
-// 5. 管理端：更新備註
-app.post("/admin/update-note", (req, res) => {
-  const { userId, note } = req.body;
-  db.query("UPDATE users SET notes = ? WHERE id = ?", [note, userId], (err) => {
-    if (err) return res.status(500).json({ error: "更新失敗" });
-    res.json({ success: true });
-  });
-});
-
-// --- 6. 管理端：獲取詳細用戶清單 ---
+// 6. 管理端：獲取詳細用戶清單
 app.get("/admin/users", (req, res) => {
   const sql = `
     SELECT 
@@ -170,12 +163,12 @@ app.get("/admin/users", (req, res) => {
     ORDER BY u.id DESC
   `;
   db.query(sql, (err, rows) => {
-    if (err) return res.status(500).json({ error: "讀取失敗" });
+    if (err) return res.status(500).json({ error: "讀取後台名單失敗" });
     res.json(rows);
   });
 });
 
-// --- 7. 管理端：導出 Excel ---
+// 7. 管理端：導出 Excel
 app.get("/admin/export-excel", (req, res) => {
   const filterDate = req.query.date;
   let sql = `
@@ -197,7 +190,7 @@ app.get("/admin/export-excel", (req, res) => {
   sql += ` ORDER BY c.checkin_time DESC`;
 
   db.query(sql, params, (err, rows) => {
-    if (err) return res.status(500).send("導出失敗");
+    if (err) return res.status(500).send("Excel 導出失敗");
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "簽到名單");
@@ -210,10 +203,13 @@ app.get("/admin/export-excel", (req, res) => {
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ 伺服器運行在 Port: ${PORT}`);
+  console.log(`✅ 伺服器已啟動，監聽連接埠: ${PORT}`);
 });
 
-// 安全關閉連線池
+// 接收結束訊號時關閉資料庫連線
 process.on('SIGTERM', () => {
-  db.end(() => process.exit(0));
+  db.end(() => {
+    console.log('資料庫連線池已安全關閉');
+    process.exit(0);
+  });
 });
