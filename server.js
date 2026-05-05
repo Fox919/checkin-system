@@ -121,14 +121,18 @@ app.post("/register", (req, res) => {
 });
 
 // 5. 簽到路由 (手動點擊簽到)
+// 5. 簽到路由 (優化版：支持新人自動轉訪客、防止重複計次但顯示歡迎)
 app.post("/checkin/:id", (req, res) => {
   const userId = req.params.id;
   
-  // 先檢查今天是否簽到過
+  // 1. 先獲取用戶目前的身份，並檢查今天是否已經簽到過
   const checkSql = `
-    SELECT u.name, u.user_type, 
-    (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday
-    FROM users u WHERE u.id = ?
+    SELECT 
+      u.name, 
+      u.user_type, 
+      (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday
+    FROM users u 
+    WHERE u.id = ?
   `;
   
   db.query(checkSql, [userId, userId], (err, rows) => {
@@ -136,18 +140,48 @@ app.post("/checkin/:id", (req, res) => {
     if (rows.length === 0) return res.status(404).json({ success: false, error: "找不到此用戶" });
 
     const { name, user_type, hasCheckedInToday } = rows[0];
-    if (hasCheckedInToday > 0) return res.json({ success: false, message: "今天已經簽到過了！" });
 
-    // 更新用戶狀態並插入簽到紀錄
-    db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [userId], (updateErr) => {
+    // --- 情況 A: 今天已經簽到過 (重複簽到) ---
+    if (hasCheckedInToday > 0) {
+      return res.json({ 
+        success: true, 
+        name, 
+        user_type, 
+        message: "歡迎回來！您今天已經簽到過囉 😊",
+        already_done: true // 告知前端這是重複操作，不需特別處理
+      });
+    }
+
+    // --- 情況 B: 今天第一次簽到 ---
+    
+    // 邏輯判定：如果是「新人 (newcomer)」，簽到後自動轉為「一般訪客 (visitor)」
+    // 這樣第二次來（隔天或以後）他就會以 visitor 身份出現
+    let targetType = user_type;
+    if (user_type && user_type.toLowerCase().includes('newcomer')) {
+      targetType = 'visitor';
+    }
+
+    // 更新用戶身份 (如果需要) 與 狀態
+    const updateSql = "UPDATE users SET status = 'checked-in', user_type = ? WHERE id = ?";
+    db.query(updateSql, [targetType, userId], (updateErr) => {
+      if (updateErr) return res.status(500).json({ success: false, error: "更新身份失敗" });
+
+      // 插入簽到紀錄
       db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId], (insertErr) => {
         if (insertErr) return res.status(500).json({ success: false, error: "簽到紀錄寫入失敗" });
-        res.json({ success: true, name, user_type, message: "簽到成功！" });
+        
+        res.json({ 
+          success: true, 
+          name, 
+          user_type: targetType, 
+          message: targetType === 'visitor' && user_type !== 'visitor' 
+            ? "簽到成功！歡迎您成為正式訪客 🌿" 
+            : "簽到成功！" 
+        });
       });
     });
   });
 });
-
 // 6. 管理端：獲取詳細用戶清單
 app.get("/admin/users", (req, res) => {
   const sql = `
@@ -197,6 +231,20 @@ app.get("/admin/export-excel", (req, res) => {
     const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(excelBuffer);
+  });
+});
+
+// 8. 管理端：快速變更身份 (例如：轉為義工)
+app.patch("/admin/update-type/:id", (req, res) => {
+  const userId = req.params.id;
+  const { new_type } = req.body; // 前端傳入 { "new_type": "volunteer" }
+
+  if (!new_type) return res.status(400).json({ error: "請提供新的身份類別" });
+
+  const sql = "UPDATE users SET user_type = ? WHERE id = ?";
+  db.query(sql, [new_type, userId], (err, result) => {
+    if (err) return res.status(500).json({ error: "身份更新失敗" });
+    res.json({ success: true, message: `已將身份更新為 ${new_type}` });
   });
 });
 
