@@ -235,9 +235,9 @@ app.get("/admin/export-excel", (req, res) => {
 });
 
 // 8. 管理端：快速變更身份 (例如：轉為義工)
-app.patch("/admin/update-type/:id", (req, res) => {
+app.post("/admin/update-type/:id", (req, res) => {
   const userId = req.params.id;
-  const { new_type } = req.body; // 前端傳入 { "new_type": "volunteer" }
+  const { new_type } = req.body; 
 
   if (!new_type) return res.status(400).json({ error: "請提供新的身份類別" });
 
