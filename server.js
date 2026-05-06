@@ -248,6 +248,30 @@ app.post("/admin/update-type/:id", (req, res) => {
   });
 });
 
+// 9. 管理端：更新用戶備註 (確保欄位名為 notes)
+app.post("/admin/update-note", (req, res) => {
+  const { userId, notes } = req.body; // 從前端接收 userId 和 notes
+
+  if (!userId) {
+    return res.status(400).json({ error: "缺少用戶 ID" });
+  }
+
+  // 確保 SQL 語句中使用 notes = ?
+  const sql = "UPDATE users SET notes = ? WHERE id = ?";
+  
+  db.query(sql, [notes || '', userId], (err, result) => {
+    if (err) {
+      console.error("更新備註失敗:", err);
+      return res.status(500).json({ error: "資料庫更新失敗" });
+    }
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "找不到該用戶" });
+    }
+
+    res.json({ success: true, message: "備註已成功存入" });
+  });
+});
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
