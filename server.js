@@ -272,6 +272,71 @@ app.post("/admin/update-note", (req, res) => {
     res.json({ success: true, message: "備註已成功存入" });
   });
 });
+
+
+// 10. 提交預約請求
+app.post("/book", (req, res) => {
+  const { userId, itemId, bookingDate } = req.body;
+
+  // 1. 基礎檢查
+  if (!userId || !itemId || !bookingDate) {
+    return res.status(400).json({ 
+      success: false, 
+      error: "預約資料不完整，請確保已選擇用戶、項目與日期" 
+    });
+  }
+
+  // 2. 插入預約紀錄
+  // 注意：這裡的項目前端傳過來是 itemId，對應資料庫的 offering_id
+  const sql = "INSERT INTO bookings (user_id, offering_id, booking_date, status) VALUES (?, ?, ?, 'pending')";
+  
+  db.query(sql, [userId, itemId, bookingDate], (err, result) => {
+    if (err) {
+      console.error("預約寫入失敗:", err);
+      return res.status(500).json({ 
+        success: false, 
+        error: "資料庫寫入失敗", 
+        detail: err.message 
+      });
+    }
+
+    // 3. 獲取用戶姓名以便回傳（選擇性，增加體驗）
+    db.query("SELECT name FROM users WHERE id = ?", [userId], (err, rows) => {
+      const userName = (rows && rows.length > 0) ? rows[0].name : "學員";
+      
+      console.log(`📅 新預約: ${userName} 預約了項目 ID ${itemId} 於 ${bookingDate}`);
+      
+      res.json({ 
+        success: true, 
+        message: "預約已成功提交，請等待確認",
+        bookingId: result.insertId 
+      });
+    });
+  });
+});
+
+// 11. 管理端：獲取所有預約清單 (含用戶名與項目名稱)
+app.get("/admin/bookings", (req, res) => {
+  // 這裡假設你有 offerings 表存放項目名稱，如果還沒建，可以先關聯 ID
+  const sql = `
+    SELECT 
+      b.id, b.booking_date, b.status, b.created_at,
+      u.name as user_name, u.phone,
+      b.offering_id
+    FROM bookings b
+    JOIN users u ON b.user_id = u.id
+    ORDER BY b.created_at DESC
+  `;
+  
+  db.query(sql, (err, rows) => {
+    if (err) return res.status(500).json({ error: "讀取預約清單失敗" });
+    res.json(rows);
+  });
+});
+
+
+
+
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
