@@ -274,57 +274,52 @@ app.post("/admin/update-note", (req, res) => {
 });
 
 
-// 10. 提交預約請求
+// 10. 提交預約請求 (優化版：加入時段支持)
 app.post("/book", (req, res) => {
-  const { userId, itemId, bookingDate } = req.body;
+  // 這裡多接收一個 bookingTime
+  const { userId, itemId, bookingDate, bookingTime } = req.body;
 
-  // 1. 基礎檢查
   if (!userId || !itemId || !bookingDate) {
     return res.status(400).json({ 
       success: false, 
-      error: "預約資料不完整，請確保已選擇用戶、項目與日期" 
+      error: "預約資料不完整" 
     });
   }
 
-  // 2. 插入預約紀錄
-  // 注意：這裡的項目前端傳過來是 itemId，對應資料庫的 offering_id
-  const sql = "INSERT INTO bookings (user_id, offering_id, booking_date, status) VALUES (?, ?, ?, 'pending')";
+  // SQL 加入 booking_time 欄位 (請確保資料庫 bookings 表有此欄位)
+  const sql = "INSERT INTO bookings (user_id, offering_id, booking_date, booking_time, status) VALUES (?, ?, ?, ?, 'pending')";
   
-  db.query(sql, [userId, itemId, bookingDate], (err, result) => {
+  // 如果前端沒傳 bookingTime (例如課程模式)，給予預設值 '全天'
+  const finalTime = bookingTime || '全天';
+
+  db.query(sql, [userId, itemId, bookingDate, finalTime], (err, result) => {
     if (err) {
       console.error("預約寫入失敗:", err);
-      return res.status(500).json({ 
-        success: false, 
-        error: "資料庫寫入失敗", 
-        detail: err.message 
-      });
+      return res.status(500).json({ success: false, error: "資料庫寫入失敗" });
     }
 
-    // 3. 獲取用戶姓名以便回傳（選擇性，增加體驗）
     db.query("SELECT name FROM users WHERE id = ?", [userId], (err, rows) => {
       const userName = (rows && rows.length > 0) ? rows[0].name : "學員";
-      
-      console.log(`📅 新預約: ${userName} 預約了項目 ID ${itemId} 於 ${bookingDate}`);
-      
       res.json({ 
         success: true, 
-        message: "預約已成功提交，請等待確認",
+        message: "預約已成功提交",
         bookingId: result.insertId 
       });
     });
   });
 });
 
-// 11. 管理端：獲取所有預約清單 (含用戶名與項目名稱)
+
+// 11. 管理端：獲取所有預約清單 (優化版：顯示項目名稱與預約時間)
 app.get("/admin/bookings", (req, res) => {
-  // 這裡假設你有 offerings 表存放項目名稱，如果還沒建，可以先關聯 ID
   const sql = `
     SELECT 
-      b.id, b.booking_date, b.status, b.created_at,
+      b.id, b.booking_date, b.booking_time, b.status, b.created_at,
       u.name as user_name, u.phone,
-      b.offering_id
+      o.title as offering_title
     FROM bookings b
     JOIN users u ON b.user_id = u.id
+    LEFT JOIN offerings o ON b.offering_id = o.id
     ORDER BY b.created_at DESC
   `;
   
@@ -333,7 +328,43 @@ app.get("/admin/bookings", (req, res) => {
     res.json(rows);
   });
 });
+// --- 1. 獲取所有項目配置 (Admin & User 通用) ---
+app.get('/api/offerings', (req, res) => {
+  const sql = "SELECT * FROM offerings";
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("讀取 offerings 失敗:", err);
+      return res.status(500).json({ error: "資料庫讀取失敗" });
+    }
+    
+    // 將資料庫存儲的 JSON 字串解析回物件，方便前端直接使用
+    const data = rows.map(row => ({
+      ...row,
+      config: typeof row.config === 'string' ? JSON.parse(row.config || '{}') : row.config
+    }));
+    res.json(data);
+  });
+});
 
+// --- 2. 更新特定項目的配置 (AdminPage 專用) ---
+app.post('/api/offerings/:id/config', (req, res) => {
+  const { id } = req.params;
+  const { config } = req.body; // 前端傳來的 config 物件
+
+  if (!config) {
+    return res.status(400).json({ error: "缺少配置資料" });
+  }
+
+  // 將物件轉為字串存入資料庫的 TEXT 或 JSON 欄位
+  const sql = "UPDATE offerings SET config = ? WHERE id = ?";
+  db.query(sql, [JSON.stringify(config), id], (err, result) => {
+    if (err) {
+      console.error("更新 offerings 失敗:", err);
+      return res.status(500).json({ error: "資料庫更新失敗" });
+    }
+    res.json({ success: true, message: "配置更新成功" });
+  });
+});
 
 
 
