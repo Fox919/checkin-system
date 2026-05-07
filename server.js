@@ -366,9 +366,11 @@ app.post('/api/offerings/:id/config', (req, res) => {
   });
 });
 
-// 修正後的查詢個人預約路由
+//11. 修正後的查詢個人預約路由
+// 後端 index.js
 app.get('/api/bookings', (req, res) => {
   const userId = req.query.userId;
+  // 這裡要確保與你 book 路由寫入時的欄位名稱一致
   const sql = `
     SELECT b.*, o.title, o.type, o.icon 
     FROM bookings b 
@@ -378,13 +380,12 @@ app.get('/api/bookings', (req, res) => {
 
   db.query(sql, [userId], (err, results) => {
     if (err) {
-      console.error("讀取個人預約失敗:", err);
+      console.error("SQL 錯誤:", err);
       return res.status(500).json({ error: err.message });
     }
-    res.json(results);
+    res.json(results); // 確保這裡回傳的是陣列
   });
 });
-
 // 12. 取消預約路由
 app.post('/api/bookings/:id/cancel', (req, res) => {
   const bookingId = req.params.id;
