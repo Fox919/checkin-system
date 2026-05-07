@@ -366,7 +366,39 @@ app.post('/api/offerings/:id/config', (req, res) => {
   });
 });
 
+// 修正後的查詢個人預約路由
+app.get('/api/bookings', (req, res) => {
+  const userId = req.query.userId;
+  const sql = `
+    SELECT b.*, o.title, o.type, o.icon 
+    FROM bookings b 
+    JOIN offerings o ON b.offering_id = o.id 
+    WHERE b.user_id = ? 
+    ORDER BY b.booking_date DESC`;
 
+  db.query(sql, [userId], (err, results) => {
+    if (err) {
+      console.error("讀取個人預約失敗:", err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(results);
+  });
+});
+
+// 12. 取消預約路由
+app.post('/api/bookings/:id/cancel', (req, res) => {
+  const bookingId = req.params.id;
+  // 將狀態改為 cancelled (或你定義的取消狀態碼)
+  const sql = "UPDATE bookings SET status = 'cancelled' WHERE id = ?";
+  
+  db.query(sql, [bookingId], (err, result) => {
+    if (err) {
+      console.error("取消預約失敗:", err);
+      return res.status(500).json({ success: false, error: "資料庫更新失敗" });
+    }
+    res.json({ success: true, message: "預約已取消" });
+  });
+});
 
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
