@@ -1,5 +1,5 @@
 import express from 'express';
-import mysql from 'mysql2';
+import mysql from 'mysql2/promise'; // 統一使用 promise 版本
 import dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
 import cors from 'cors';
@@ -7,7 +7,6 @@ import cors from 'cors';
 dotenv.config();
 
 const app = express();
-
 // --- Middleware 設定 ---
 // 強化 CORS： origin 設定為 true 會自動抓取請求來源，並允許它，這對 Vercel 最穩定
 app.use(cors({
@@ -26,9 +25,7 @@ const db = mysql.createPool({
   database: process.env.MYSQL_DATABASE,
   port: process.env.MYSQLPORT || 3306,
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
+  connectionLimit: 10});
 
 // --- 路由 ---
 
@@ -412,29 +409,28 @@ app.get('/api/offerings', async (req, res) => {
     }
 });
 
-// 你剛寫的更新路由 (加入一條安全性檢查)
+// 確保頂部是 require('mysql2/promise')
 app.put('/api/offerings/:id/config', async (req, res) => {
     const offeringId = req.params.id;
     const { config } = req.body;
 
-    if (!config || !config.sessions) {
-        return res.status(400).json({ success: false, message: "無效的配置數據" });
-    }
-
     try {
         const configString = JSON.stringify(config);
-        // 更新並確認該項目 type 是否為 course (可選)
-        await db.query(
+        
+        // 使用 .promise() 確保支援 await (如果你沒在引入處改的話)
+        // 注意：mysql2 執行 UPDATE 回傳的是一個包含資訊的陣列
+        const [result] = await db.promise().query(
             "UPDATE offerings SET config = ? WHERE id = ?", 
             [configString, offeringId]
         );
+
+        console.log("資料庫更新成功:", result);
         res.json({ success: true, message: "✅ 期次更新成功" });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, message: "❌ 資料庫更新失敗" });
+        console.error("SQL 執行錯誤:", err);
+        res.status(500).json({ success: false, message: "❌ 資料庫更新失敗: " + err.message });
     }
 });
-
 
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
