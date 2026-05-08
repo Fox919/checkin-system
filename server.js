@@ -401,6 +401,41 @@ app.post('/api/bookings/:id/cancel', (req, res) => {
   });
 });
 
+// 獲取所有課程 (讓管理員選)
+app.get('/api/offerings', async (req, res) => {
+    try {
+        const result = await db.query("SELECT id, title, type FROM offerings");
+        // 依照你的資料庫驅動，可能是 result.rows (PG) 或直接是 result (MySQL)
+        res.json(result.rows || result); 
+    } catch (err) {
+        res.status(500).send("Server Error");
+    }
+});
+
+// 你剛寫的更新路由 (加入一條安全性檢查)
+app.put('/api/offerings/:id/config', async (req, res) => {
+    const offeringId = req.params.id;
+    const { config } = req.body;
+
+    if (!config || !config.sessions) {
+        return res.status(400).json({ success: false, message: "無效的配置數據" });
+    }
+
+    try {
+        const configString = JSON.stringify(config);
+        // 更新並確認該項目 type 是否為 course (可選)
+        await db.query(
+            "UPDATE offerings SET config = ? WHERE id = ?", 
+            [configString, offeringId]
+        );
+        res.json({ success: true, message: "✅ 期次更新成功" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "❌ 資料庫更新失敗" });
+    }
+});
+
+
 // --- 啟動伺服器 ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
