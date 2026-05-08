@@ -98,6 +98,41 @@ app.post("/checkin/:id", async (req, res) => {
   }
 });
 
+// 5.5
+app.post("/admin/update-receptionist", async (req, res) => {
+  const { userId, receptionistName } = req.body;
+  try {
+    await db.query("UPDATE users SET receptionist_name = ? WHERE id = ?", [receptionistName, userId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5.6 管理端：變更用戶身份 (例如訪客轉義工)
+app.post("/admin/update-type/:id", async (req, res) => {
+  const userId = req.params.id;
+  const { new_type } = req.body;
+  try {
+    await db.query("UPDATE users SET user_type = ? WHERE id = ?", [new_type, userId]);
+    res.json({ success: true, message: `已將身份更新為 ${new_type}` });
+  } catch (err) {
+    res.status(500).json({ error: "身份更新失敗: " + err.message });
+  }
+});
+
+// 5.7管理端：更新用戶備註
+app.post("/admin/update-note", async (req, res) => {
+  const { userId, notes } = req.body; // 注意前端送的是 notes 還是 note，這裡統一用 notes
+  try {
+    await db.query("UPDATE users SET notes = ? WHERE id = ?", [notes, userId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "備註更新失敗" });
+  }
+});
+
+
 // 6. 管理端：獲取項目 (合併後的唯一路徑)
 app.get('/api/offerings', async (req, res) => {
   try {
@@ -146,17 +181,25 @@ app.get('/api/bookings', async (req, res) => {
   }
 });
 
-// 10. 管理端：詳細名單
+// 10. 管理端：詳細名單 (補上接待人、管道等欄位)
 app.get("/admin/users", async (req, res) => {
   try {
-    const sql = `SELECT u.id, u.last_name, u.first_name, u.gender, u.name, u.phone, u.user_type, u.email, u.notes, u.status, MAX(c.checkin_date) as last_checkin_date FROM users u LEFT JOIN checkins c ON u.id = c.user_id GROUP BY u.id ORDER BY u.id DESC`;
+    const sql = `
+      SELECT 
+        u.id, u.last_name, u.first_name, u.gender, u.name, u.phone, 
+        u.user_type, u.email, u.notes, u.status, u.discovery_source,
+        u.receptionist_name, -- 確保這一行有加進去
+        MAX(c.checkin_date) as last_checkin_date 
+      FROM users u 
+      LEFT JOIN checkins c ON u.id = c.user_id 
+      GROUP BY u.id 
+      ORDER BY u.id DESC`;
     const [rows] = await db.query(sql);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 // 11. Excel 導出
 app.get("/admin/export-excel", async (req, res) => {
   try {
