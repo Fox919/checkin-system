@@ -55,18 +55,52 @@ app.post("/check-duplicate", async (req, res) => {
   }
 });
 
-// 4. 註冊
+// 4. 註冊 (優化外展活動邏輯)
 app.post("/register", async (req, res) => {
-  const { lastName, firstName, gender, phone, email, contact_method, lang, discovery_source, referrer_name, other_source_text, user_type, autoCheckin, notes } = req.body;
-  const fullName = `${lastName}${firstName}`;
-  const qr_code = `QR_${phone}_${Date.now()}`;
-  const finalSource = discovery_source === 'Other' ? other_source_text : discovery_source;
+  const { 
+    lastName, firstName, gender, phone, email, 
+    contact_method, lang, discovery_source, 
+    is_blessed, // 新增：加持標記
+    user_type, autoCheckin, notes 
+  } = req.body;
+
+  // 1. 組合姓名
+  const fullName = `${lastName || ''}${firstName || ''}`.trim();
+  
+  // 2. 驗證姓名必填 (後端最後一道防線)
+  if (!fullName) return res.status(400).json({ error: "姓名為必填項目" });
+
+  // 3. 驗證聯繫方式二選一
+  if (!phone && !email) return res.status(400).json({ error: "電話或 Email 必須提供其中一項" });
+
+  const qr_code = `QR_${phone || 'no-phone'}_${Date.now()}`;
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
-  const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : contact_method;
+  const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
   try {
-    const sql = `INSERT INTO users (last_name, first_name, gender, name, phone, email, contact_method, lang, city, discovery_source, referrer_name, youtube_subscribed, user_type, qr_code, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const [result] = await db.query(sql, [lastName, firstName, gender, fullName, phone, email || null, contactMethodString, lang, '', finalSource, referrer_name || null, 0, user_type || 'Visitor', qr_code, notes || '', initialStatus]);
+    const sql = `
+      INSERT INTO users (
+        last_name, first_name, gender, name, phone, email, 
+        contact_method, lang, discovery_source, is_blessed, 
+        user_type, qr_code, notes, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+    const [result] = await db.query(sql, [
+      lastName || '', 
+      firstName || '', 
+      gender || 'Other', 
+      fullName, 
+      phone || null, 
+      email || null, 
+      contactMethodString, 
+      lang || 'zh', 
+      discovery_source || 'Outreach', 
+      is_blessed ? 1 : 0, // 存入 1 (已加持) 或 0
+      user_type || 'Visitor', 
+      qr_code, 
+      notes || '', 
+      initialStatus
+    ]);
     
     const userId = result.insertId;
     if (autoCheckin) {
@@ -74,10 +108,10 @@ app.post("/register", async (req, res) => {
     }
     res.json({ success: true, id: userId, name: fullName });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Register Error:", err);
+    res.status(500).json({ error: "註冊失敗，可能是手機號碼已存在或資料庫錯誤。" });
   }
 });
-
 // 5. 簽到
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
@@ -181,19 +215,26 @@ app.get('/api/bookings', async (req, res) => {
   }
 });
 
-// 10. 管理端：詳細名單 (補上接待人、管道等欄位)
+// 10. 管理端：詳細名單 (移除性別，整合登記時間與簽到時間)
 app.get("/admin/users", async (req, res) => {
   try {
     const sql = `
       SELECT 
-        u.id, u.last_name, u.first_name, u.gender, u.name, u.phone, 
-        u.user_type, u.email, u.notes, u.status, u.discovery_source,
-        u.receptionist_name, -- 確保這一行有加進去
-        MAX(c.checkin_date) as last_checkin_date 
+        u.id, 
+        u.name, 
+        u.phone, 
+        u.email,
+        u.user_type, 
+        u.status, 
+        u.discovery_source,
+        u.is_blessed,
+        u.created_at, -- 來自 users 表的登記時間
+        MAX(c.checkin_time) as last_checkin_time -- 來自 checkins 表的最後簽到時間
       FROM users u 
       LEFT JOIN checkins c ON u.id = c.user_id 
       GROUP BY u.id 
       ORDER BY u.id DESC`;
+      
     const [rows] = await db.query(sql);
     res.json(rows);
   } catch (err) {
