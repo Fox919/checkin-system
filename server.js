@@ -112,26 +112,51 @@ app.post("/register", async (req, res) => {
     res.status(500).json({ error: "註冊失敗，可能是手機號碼已存在或資料庫錯誤。" });
   }
 });
+
+
 // 5. 簽到
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   try {
-    const [rows] = await db.query("SELECT name, user_type, (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday FROM users WHERE id = ?", [userId, userId]);
+    const [rows] = await db.query(
+      "SELECT name, user_type, (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday FROM users WHERE id = ?", 
+      [userId, userId]
+    );
+    
     if (rows.length === 0) return res.status(404).json({ error: "找不到用戶" });
 
     const { name, user_type, hasCheckedInToday } = rows[0];
-    if (hasCheckedInToday > 0) return res.json({ success: true, name, already_done: true });
+    
+    // 如果今天已經簽到過
+    if (hasCheckedInToday > 0) {
+      return res.json({ 
+        success: true, 
+        name, 
+        already_done: true,
+        message: "您今天已經簽到過囉 😊" 
+      });
+    }
 
     let targetType = user_type?.toLowerCase().includes('newcomer') ? 'visitor' : user_type;
-    await db.query("UPDATE users SET status = 'checked-in', user_type = ? WHERE id = ?", [targetType, userId]);
-    await db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId]);
+
+    // --- 關鍵修正點：同時更新 users 表的 last_checkin_time ---
+    await db.query(
+      "UPDATE users SET status = 'checked-in', user_type = ?, last_checkin_time = NOW() WHERE id = ?", 
+      [targetType, userId]
+    );
+
+    // 保持原本的簽到紀錄表寫入
+    await db.query(
+      "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", 
+      [userId]
+    );
     
     res.json({ success: true, name, user_type: targetType });
   } catch (err) {
+    console.error("簽到錯誤:", err);
     res.status(500).json({ error: err.message });
   }
 });
-
 // 5.5
 app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
