@@ -250,6 +250,8 @@ app.get("/admin/users", async (req, res) => {
         u.phone, 
         u.email,
         u.user_type, 
+        u.lang,                  
+        u.referrer_name,          
         u.status, 
         u.discovery_source,
         u.is_blessed,
@@ -270,7 +272,8 @@ app.get("/admin/users", async (req, res) => {
 app.get("/admin/export-excel", async (req, res) => {
   try {
     const filterDate = req.query.date;
-    let sql = `SELECT u.name AS '全名', u.phone AS '電話', u.user_type AS '身份', c.checkin_time AS '簽到時間' FROM checkins c JOIN users u ON c.user_id = u.id`;
+    let sql = `SELECT u.name AS '全名', u.phone AS '電話', u.user_type AS '身份', u.lang AS '語言', 
+        u.referrer_name AS '介紹人',c.checkin_time AS '簽到時間' FROM checkins c JOIN users u ON c.user_id = u.id`;
     const [rows] = filterDate ? await db.query(sql + " WHERE DATE(c.checkin_time) = ?", [filterDate]) : await db.query(sql);
     
     const worksheet = XLSX.utils.json_to_sheet(rows);
