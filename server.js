@@ -55,12 +55,14 @@ app.post("/check-duplicate", async (req, res) => {
   }
 });
 
-// 4. 註冊 (優化外展活動邏輯)
+// 4. 註冊 (🛠️ 已修正：加入介紹人與其他文字的後端寫入處理)
 app.post("/register", async (req, res) => {
   const { 
     lastName, firstName, gender, phone, email, 
     contact_method, lang, discovery_source, 
-    is_blessed, // 新增：加持標記
+    referrer_name,       // ✨ 修正 1：後端解構撈出介紹人姓名
+    other_source_text,   // ✨ 修正 2：後端解構撈出其他自訂來源說明
+    is_blessed, 
     user_type, autoCheckin, notes 
   } = req.body;
 
@@ -78,13 +80,20 @@ app.post("/register", async (req, res) => {
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
   try {
+    // ✨ 修正 3：在 SQL INSERT 語句中，添加了 referrer_name 和 notes (或 other_source_text，這裡直接處理)
     const sql = `
       INSERT INTO users (
         last_name, first_name, gender, name, phone, email, 
-        contact_method, lang, discovery_source, is_blessed, 
-        user_type, qr_code, notes, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        contact_method, lang, discovery_source, referrer_name, 
+        is_blessed, user_type, qr_code, notes, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
+    // 備註欄位整合：如果 discovery_source 是 'Other' 且有填 text，就跟原本的 notes 合併或替代存入
+    const finalNotes = other_source_text 
+      ? `[補充來源: ${other_source_text}] ${notes || ''}`.trim() 
+      : (notes || '');
+
+    // ✨ 修正 4：在 values 對應陣列中，依據上面的欄位順序塞入數值
     const [result] = await db.query(sql, [
       lastName || '', 
       firstName || '', 
@@ -95,10 +104,11 @@ app.post("/register", async (req, res) => {
       contactMethodString, 
       lang || 'zh', 
       discovery_source || 'Outreach', 
-      is_blessed ? 1 : 0, // 存入 1 (已加持) 或 0
+      referrer_name || null, // 🔮 正確寫入資料庫
+      is_blessed ? 1 : 0, 
       user_type || 'Visitor', 
       qr_code, 
-      notes || '', 
+      finalNotes,           // 把 other_source_text 的內容也安頓到 notes 裡，或者你的 users 有 other_source 欄位可自行更改
       initialStatus
     ]);
     
@@ -127,7 +137,6 @@ app.post("/checkin/:id", async (req, res) => {
 
     const { name, user_type, hasCheckedInToday } = rows[0];
     
-    // 如果今天已經簽到過
     if (hasCheckedInToday > 0) {
       return res.json({ 
         success: true, 
@@ -139,13 +148,11 @@ app.post("/checkin/:id", async (req, res) => {
 
     let targetType = user_type?.toLowerCase().includes('newcomer') ? 'visitor' : user_type;
 
-    // --- 關鍵修正點：同時更新 users 表的 last_checkin_time ---
     await db.query(
       "UPDATE users SET status = 'checked-in', user_type = ?, last_checkin_time = NOW() WHERE id = ?", 
       [targetType, userId]
     );
 
-    // 保持原本的簽到紀錄表寫入
     await db.query(
       "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", 
       [userId]
@@ -157,6 +164,7 @@ app.post("/checkin/:id", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // 5.5
 app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
@@ -168,7 +176,7 @@ app.post("/admin/update-receptionist", async (req, res) => {
   }
 });
 
-// 5.6 管理端：變更用戶身份 (例如訪客轉義工)
+// 5.6 管理端：變更用戶身份
 app.post("/admin/update-type/:id", async (req, res) => {
   const userId = req.params.id;
   const { new_type } = req.body;
@@ -180,9 +188,9 @@ app.post("/admin/update-type/:id", async (req, res) => {
   }
 });
 
-// 5.7管理端：更新用戶備註
+// 5.7 管理端：更新用戶備註
 app.post("/admin/update-note", async (req, res) => {
-  const { userId, notes } = req.body; // 注意前端送的是 notes 還是 note，這裡統一用 notes
+  const { userId, notes } = req.body;
   try {
     await db.query("UPDATE users SET notes = ? WHERE id = ?", [notes, userId]);
     res.json({ success: true });
@@ -191,8 +199,7 @@ app.post("/admin/update-note", async (req, res) => {
   }
 });
 
-
-// 6. 管理端：獲取項目 (合併後的唯一路徑)
+// 6. 管理端：獲取項目
 app.get('/api/offerings', async (req, res) => {
   try {
     const [rows] = await db.query("SELECT * FROM offerings");
@@ -206,7 +213,7 @@ app.get('/api/offerings', async (req, res) => {
   }
 });
 
-// 7. 更新課程配置 (開班管理專用 - PUT)
+// 7. 更新課程配置
 app.put('/api/offerings/:id/config', async (req, res) => {
   const { id } = req.params;
   const { config } = req.body;
@@ -240,7 +247,7 @@ app.get('/api/bookings', async (req, res) => {
   }
 });
 
-// 10. 管理端：詳細名單 (移除性別，整合登記時間與簽到時間)
+// 10. 管理端：詳細名單
 app.get("/admin/users", async (req, res) => {
   try {
     const sql = `
@@ -255,8 +262,8 @@ app.get("/admin/users", async (req, res) => {
         u.status, 
         u.discovery_source,
         u.is_blessed,
-        u.created_at, -- 來自 users 表的登記時間
-        MAX(c.checkin_time) as last_checkin_time -- 來自 checkins 表的最後簽到時間
+        u.created_at, 
+        MAX(c.checkin_time) as last_checkin_time 
       FROM users u 
       LEFT JOIN checkins c ON u.id = c.user_id 
       GROUP BY u.id 
@@ -268,6 +275,7 @@ app.get("/admin/users", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // 11. Excel 導出
 app.get("/admin/export-excel", async (req, res) => {
   try {
