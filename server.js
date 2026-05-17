@@ -103,7 +103,9 @@ app.post("/register", async (req, res) => {
       email || null, 
       contactMethodString, 
       lang || 'zh', 
-      discovery_source || 'Outreach', 
+      // ❌ 原本是：discovery_source || 'Outreach',
+  // ✨ 請改成這樣：如果前端沒傳（隱藏），就存入 null，不給他亂扣外展的帽子！
+  discovery_source || null, 
       referrer_name || null, // 🔮 正確寫入資料庫
       is_blessed ? 1 : 0, 
       user_type || 'Visitor', 
