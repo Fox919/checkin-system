@@ -121,7 +121,13 @@ app.post("/register", async (req, res) => {
     res.json({ success: true, id: userId, name: fullName });
   } catch (err) {
     console.error("Register Error:", err);
-    res.status(500).json({ error: "註冊失敗，可能是手機號碼已存在或資料庫錯誤。" });
+    
+    // 如果因為某些原因（例如連點提交）觸發了新的三合一索引錯誤
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: "此成員（相同姓名與電話）已經登記過囉！" });
+    }
+    
+    res.status(500).json({ error: "系統登錄失敗，請稍後再試或聯繫管理員。" });
   }
 });
 
