@@ -1,5 +1,5 @@
 import express from 'express';
-import mysql from 'mysql2/promise'; // 統一使用 promise
+import mysql from 'mysql2/promise'; 
 import dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
 import cors from 'cors';
@@ -29,7 +29,41 @@ const db = mysql.createPool({
   queueLimit: 0
 });
 
-// --- 路由重構 (全部改用 async/await) ---
+// --- 🛠️ 核心輔助函數區 ---
+
+// 1. 檢查目前時間是否在指定的「開始」與「結束」時間內
+function isTimeBetween(nowTimeStr, startTimeStr, endTimeStr) {
+  if (!startTimeStr || !endTimeStr) return false;
+  return nowTimeStr >= startTimeStr && nowTimeStr <= endTimeStr;
+}
+
+// 2. 核心計算函數：自動刷新學員的出勤率
+async function refreshAttendanceRate(userId, offeringId) {
+  // 撈出該課程要求的總打卡次數（預設為 24 次）
+  const [course] = await db.query("SELECT total_checkins_required FROM offerings WHERE id = ?", [offeringId]);
+  const totalRequired = course[0]?.total_checkins_required || 24;
+
+  // 計算該學員目前的實際累計打卡總次數
+  const [attendance] = await db.query(
+    "SELECT COUNT(*) as attended FROM attendance_records WHERE user_id = ? AND offering_id = ?",
+    [userId, offeringId]
+  );
+  const attendedCount = attendance[0].attended;
+
+  // 計算出勤百分比
+  const attendanceRate = ((attendedCount / totalRequired) * 100).toFixed(2);
+
+  // 更新或寫入選課狀態表 (course_enrollments)
+  await db.query(
+    `INSERT INTO course_enrollments (user_id, offering_id, attendance_rate) 
+     VALUES (?, ?, ?) 
+     ON DUPLICATE KEY UPDATE attendance_rate = ?`,
+    [userId, offeringId, attendanceRate, attendanceRate]
+  );
+}
+
+
+// --- 📄 路由重構列表 ---
 
 // 1. 根目錄
 app.get('/', (req, res) => res.status(200).send('✅ Check-in System API is running!'));
@@ -55,24 +89,19 @@ app.post("/check-duplicate", async (req, res) => {
   }
 });
 
-// 4. 註冊 (🛠️ 已修正：加入介紹人與其他文字的後端寫入處理)
+// 4. 註冊
 app.post("/register", async (req, res) => {
   const { 
     lastName, firstName, gender, phone, email, 
     contact_method, lang, discovery_source, 
-    referrer_name,       // ✨ 修正 1：後端解構撈出介紹人姓名
-    other_source_text,   // ✨ 修正 2：後端解構撈出其他自訂來源說明
+    referrer_name,       
+    other_source_text,   
     is_blessed, 
     user_type, autoCheckin, notes 
   } = req.body;
 
-  // 1. 組合姓名
   const fullName = `${lastName || ''}${firstName || ''}`.trim();
-  
-  // 2. 驗證姓名必填 (後端最後一道防線)
   if (!fullName) return res.status(400).json({ error: "姓名為必填項目" });
-
-  // 3. 驗證聯繫方式二選一
   if (!phone && !email) return res.status(400).json({ error: "電話或 Email 必須提供其中一項" });
 
   const qr_code = `QR_${phone || 'no-phone'}_${Date.now()}`;
@@ -80,7 +109,6 @@ app.post("/register", async (req, res) => {
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
   try {
-    // ✨ 修正 3：在 SQL INSERT 語句中，添加了 referrer_name 和 notes (或 other_source_text，這裡直接處理)
     const sql = `
       INSERT INTO users (
         last_name, first_name, gender, name, phone, email, 
@@ -88,12 +116,10 @@ app.post("/register", async (req, res) => {
         is_blessed, user_type, qr_code, notes, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-    // 備註欄位整合：如果 discovery_source 是 'Other' 且有填 text，就跟原本的 notes 合併或替代存入
     const finalNotes = other_source_text 
       ? `[補充來源: ${other_source_text}] ${notes || ''}`.trim() 
       : (notes || '');
 
-    // ✨ 修正 4：在 values 對應陣列中，依據上面的欄位順序塞入數值
     const [result] = await db.query(sql, [
       lastName || '', 
       firstName || '', 
@@ -103,14 +129,12 @@ app.post("/register", async (req, res) => {
       email || null, 
       contactMethodString, 
       lang || 'zh', 
-      // ❌ 原本是：discovery_source || 'Outreach',
-  // ✨ 請改成這樣：如果前端沒傳（隱藏），就存入 null，不給他亂扣外展的帽子！
-  discovery_source || null, 
-      referrer_name || null, // 🔮 正確寫入資料庫
+      discovery_source || null, 
+      referrer_name || null, 
       is_blessed ? 1 : 0, 
       user_type || 'Visitor', 
       qr_code, 
-      finalNotes,           // 把 other_source_text 的內容也安頓到 notes 裡，或者你的 users 有 other_source 欄位可自行更改
+      finalNotes,           
       initialStatus
     ]);
     
@@ -121,18 +145,14 @@ app.post("/register", async (req, res) => {
     res.json({ success: true, id: userId, name: fullName });
   } catch (err) {
     console.error("Register Error:", err);
-    
-    // 如果因為某些原因（例如連點提交）觸發了新的三合一索引錯誤
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(400).json({ error: "此成員（相同姓名與電話）已經登記過囉！" });
     }
-    
     res.status(500).json({ error: "系統登錄失敗，請稍後再試或聯繫管理員。" });
   }
 });
 
-
-// 5. 簽到
+// 5. 簽到 (原有每日大門簽到)
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   try {
@@ -142,7 +162,6 @@ app.post("/checkin/:id", async (req, res) => {
     );
     
     if (rows.length === 0) return res.status(404).json({ error: "找不到用戶" });
-
     const { name, user_type, hasCheckedInToday } = rows[0];
     
     if (hasCheckedInToday > 0) {
@@ -173,7 +192,7 @@ app.post("/checkin/:id", async (req, res) => {
   }
 });
 
-// 5.5
+// 5.5 更新接待人
 app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
   try {
@@ -207,7 +226,7 @@ app.post("/admin/update-note", async (req, res) => {
   }
 });
 
-// 6. 管理端：獲取項目
+// 6. 管理端：獲取項目列表
 app.get('/api/offerings', async (req, res) => {
   try {
     const [rows] = await db.query("SELECT * FROM offerings");
@@ -301,6 +320,158 @@ app.get("/admin/export-excel", async (req, res) => {
     res.status(500).send("Export failed");
   }
 });
+
+
+// ==========================================
+// ✨ 新增/修補：學員考勤與畢業證書核心 API 區
+// ==========================================
+
+// 12. 前台：學員手機/Kiosk 智慧時段掃碼打卡
+app.post("/api/course-checkin", async (req, res) => {
+  const { userId, offeringId } = req.body;
+  const nowTimeStr = new Date().toTimeString().split(' ')[0]; // "HH:MM:SS"
+  const today = new Date().toISOString().slice(0, 10);        // "YYYY-MM-DD"
+
+  try {
+    const [courseRows] = await db.query(
+      `SELECT start_date, slot_1_start, slot_1_end, slot_2_start, slot_2_end, slot_3_start, slot_3_end 
+       FROM offerings WHERE id = ?`, 
+      [offeringId]
+    );
+    
+    if (courseRows.length === 0) return res.status(444).json({ success: false, message: "找不到該課程期次" });
+    
+    const c = courseRows[0];
+    let matchedSlot = null;
+    let slotLabel = "";
+
+    if (isTimeBetween(nowTimeStr, c.slot_1_start, c.slot_1_end)) {
+      matchedSlot = 'slot_1'; slotLabel = '第一節簽到';
+    } else if (isTimeBetween(nowTimeStr, c.slot_2_start, c.slot_2_end)) {
+      matchedSlot = 'slot_2'; slotLabel = '第二節簽到';
+    } else if (isTimeBetween(nowTimeStr, c.slot_3_start, c.slot_3_end)) {
+      matchedSlot = 'slot_3'; slotLabel = '第三節簽退';
+    }
+
+    if (!matchedSlot) {
+      return res.status(400).json({ success: false, message: "❌ 目前非本課程規定的打卡時間！" });
+    }
+
+    // 計算今天是開課的第幾天 (Day 1 ~ Day 8)
+    const dayDiff = Math.floor((new Date(today) - new Date(c.start_date)) / (1000 * 60 * 60 * 24)) + 1;
+    const dayNumber = dayDiff > 0 ? dayDiff : 1; // 防呆，未到開課日算 Day 1
+
+    await db.query(
+      `INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type) 
+       VALUES (?, ?, ?, ?, ?) 
+       ON DUPLICATE KEY UPDATE created_at = NOW()`,
+      [userId, offeringId, today, dayNumber, matchedSlot]
+    );
+
+    await refreshAttendanceRate(userId, offeringId);
+    res.json({ success: true, message: `✅ [${slotLabel}] 成功！` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "系統錯誤" });
+  }
+});
+
+// 13. 管理端：獲取特定課程所有學員及 8天網格打卡清單 (對接你的 React 大表)
+app.get("/admin/course-attendance/:offeringId", async (req, res) => {
+  const { offeringId } = req.params;
+  try {
+    // 撈出選了這門課的學員基本資料與出勤百分比、證書號
+    const sqlEnrollments = `
+      SELECT u.id AS user_id, u.name, ce.attendance_rate, ce.certificate_no
+      FROM course_enrollments ce
+      JOIN users u ON ce.user_id = u.id
+      WHERE ce.offering_id = ? ORDER BY u.name ASC`;
+    const [students] = await db.query(sqlEnrollments, [offeringId]);
+
+    // 撈出這門課所有的打卡流水帳紀錄
+    const [records] = await db.query(
+      "SELECT user_id, day_number, slot_type FROM attendance_records WHERE offering_id = ?",
+      [offeringId]
+    );
+
+    // 把流水帳整理歸類到各個學員結構裡，方便前端渲染
+    const formattedData = students.map(student => {
+      const studentRecords = records.filter(r => r.user_id === student.user_id);
+      return { ...student, records: studentRecords };
+    });
+
+    res.json(formattedData);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 14. 管理端：手動人工補簽 / 取消簽到切換
+app.post("/admin/toggle-attendance", async (req, res) => {
+  const { userId, offeringId, dayNumber, slotType, status } = req.body;
+  // 估算一個模擬日期
+  const today = new Date().toISOString().slice(0, 10);
+
+  try {
+    if (status === true) {
+      // 管理員幫忙補簽到
+      await db.query(
+        `INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type) 
+         VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = NOW()`,
+        [userId, offeringId, today, dayNumber, slotType]
+      );
+    } else {
+      // 管理員取消該簽到
+      await db.query(
+        "DELETE FROM attendance_records WHERE user_id = ? AND offering_id = ? AND day_number = ? AND slot_type = ?",
+        [userId, offeringId, dayNumber, slotType]
+      );
+    }
+
+    // 重新計算出勤率
+    await refreshAttendanceRate(userId, offeringId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 15. 管理端：審核畢業資格並生成證書號 (硬性守住 85% 門檻)
+app.post("/admin/evaluate-graduation", async (req, res) => {
+  const { userId, offeringId } = req.body;
+  try {
+    const [enrollment] = await db.query(
+      "SELECT attendance_rate, certificate_no FROM course_enrollments WHERE user_id = ? AND offering_id = ?",
+      [userId, offeringId]
+    );
+
+    if (enrollment.length === 0) return res.status(404).json({ error: "找不到該選課紀錄" });
+    const rate = parseFloat(enrollment[0].attendance_rate || 0);
+
+    if (rate < 85.00) {
+      return res.status(400).json({ success: false, message: `未達畢業標準！目前出勤率為 ${rate}%（標準：85%）` });
+    }
+
+    if (enrollment[0].certificate_no) {
+      return res.json({ success: true, certificate_no: enrollment[0].certificate_no });
+    }
+
+    // 生成唯一證書號 (格式: BODHI-年月-4位隨機數)
+    const datePart = new Date().toISOString().slice(0, 7).replace('-', ''); 
+    const randomPart = Math.floor(1000 + Math.random() * 9000); 
+    const newCertificateNo = `BODHI-${datePart}-${randomPart}`;
+
+    await db.query(
+      "UPDATE course_enrollments SET status = 'graduated', certificate_no = ? WHERE user_id = ? AND offering_id = ?",
+      [newCertificateNo, userId, offeringId]
+    );
+
+    res.json({ success: true, certificate_no: newCertificateNo });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // --- 啟動 ---
 const PORT = process.env.PORT || 8080;
