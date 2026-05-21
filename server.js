@@ -203,16 +203,16 @@ app.post("/admin/update-receptionist", async (req, res) => {
   }
 });
 
-// 5.6 管理端：變更用戶身份 + 自動綁定當期課程
+// 5.6 管理端：變更用戶身份（升級版：支援同步選課）
 app.post("/admin/update-type/:id", async (req, res) => {
   const userId = req.params.id;
-  const { new_type, offeringId } = req.body; // ✨ 讓前端順便把目前選的課程 ID 傳過來
+  const { new_type, offeringId } = req.body; // ✨ 前端會順便把選中的課程 ID 傳過來
   
   try {
-    // 1. 更新身份
+    // 1. 先更新 users 表的身份
     await db.query("UPDATE users SET user_type = ? WHERE id = ?", [new_type, userId]);
     
-    // 2. ✨ 如果轉成學員(例如 'Student' 或 'Member')，且有傳課程 ID，自動幫他辦理選課
+    // 2. ✨ 如果身份是學員(Student)或正式成員，且有選擇課程，就寫入 course_enrollments
     if (offeringId) {
       await db.query(
         `INSERT INTO course_enrollments (user_id, offering_id, attendance_rate, status) 
@@ -222,12 +222,12 @@ app.post("/admin/update-type/:id", async (req, res) => {
       );
     }
     
-    res.json({ success: true, message: `已將身份更新並成功加入課程！` });
+    res.json({ success: true, message: `身份更新成功，並已成功同步至該課程！` });
   } catch (err) {
-    res.status(500).json({ error: "身份更新或選課失敗: " + err.message });
+    console.error("更新身份與選課失敗:", err);
+    res.status(500).json({ error: "操作失敗: " + err.message });
   }
-});
-// 5.7 管理端：更新用戶備註
+});// 5.7 管理端：更新用戶備註
 app.post("/admin/update-note", async (req, res) => {
   const { userId, notes } = req.body;
   try {
