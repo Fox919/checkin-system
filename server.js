@@ -38,7 +38,19 @@ function isTimeBetween(nowTimeStr, startTimeStr, endTimeStr) {
   return nowTimeStr >= startTimeStr && nowTimeStr <= endTimeStr;
 }
 
-// 2. 核心計算函數：自動刷新學員的出勤率
+// 2. 獲取當前洛杉磯精準時間物件的輔助函式
+function getLAFormattedDateTime() {
+  const d = new Date();
+  const dateStr = d.toLocaleDateString('sv-SE', { timeZone: 'America/Los_Angeles' });
+  const timeStr = d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour12: false });
+  return {
+    todayStr: dateStr,
+    nowTime: timeStr,
+    fullDateTimeStr: `${dateStr} ${timeStr}` // 用來取代資料庫的 NOW()
+  };
+}
+
+// 3. 核心計算函數：自動刷新學員的出勤率
 async function refreshAttendanceRate(userId, offeringId) {
   const [course] = await db.query("SELECT total_checkins_required FROM offerings WHERE id = ?", [offeringId]);
   const totalRequired = course[0]?.total_checkins_required || 24;
@@ -101,6 +113,9 @@ app.post("/register", async (req, res) => {
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
+  // 修正點 1：自動簽到時同步使用洛杉磯時間
+  const { todayStr, fullDateTimeStr } = getLAFormattedDateTime();
+
   try {
     const sql = `
       INSERT INTO users (
@@ -133,7 +148,8 @@ app.post("/register", async (req, res) => {
     
     const userId = result.insertId;
     if (autoCheckin) {
-      await db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", [userId]);
+      // 🌟 已將 NOW() 與 CURDATE() 替換為洛杉磯精準時間
+      await db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, ?, ?)", [userId, fullDateTimeStr, todayStr]);
     }
     res.json({ success: true, id: userId, name: fullName });
   } catch (err) {
@@ -145,23 +161,13 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// 5. 🚀 簽到入口 (全面改用 JavaScript 原生時區時間，不再依賴 moment)
+// 5. 🚀 簽到入口
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   const offeringId = req.query.offeringId || 1; 
   
-  // 🆕 ✨ 使用 JavaScript 原生 API 計算標準台北/北京時間 (東八區)，防範伺服器時區錯亂
-  const d = new Date();
-  
-  // 轉化為 YYYY-MM-DD 格式
-  const todayStr = d.toLocaleDateString('zh-TW', { 
-    timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' 
-  }).replace(/\//g, '-');
-
-  // 轉化為 24小時制 HH:mm:ss 格式
-  const nowTime = d.toLocaleTimeString('zh-TW', { 
-    timeZone: 'Asia/Taipei', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' 
-  });
+  // 使用優化後的洛杉磯時間物件
+  const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
   try {
     const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [offeringId]);
@@ -170,7 +176,7 @@ app.post("/checkin/:id", async (req, res) => {
     }
     const currentOffering = offerings[0];
 
-    // 🌸 分流 A：一般服務 (如：一對一能量加持、諮詢問事)
+    // 🌸 分流 A：一般服務
     if (currentOffering.type === 'service') {
       const [existing] = await db.query(
         'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND DATE(created_at) = ?',
@@ -181,16 +187,17 @@ app.post("/checkin/:id", async (req, res) => {
         return res.json({ success: false, message: "該學員今日此服務已簽到過囉！" });
       }
       
+      // 🌟 已將 NOW() 替換為洛杉磯時間
       await db.query(
-        'INSERT INTO attendance_records (user_id, offering_id, checkin_date, created_at) VALUES (?, ?, ?, NOW())',
-        [userId, offeringId, todayStr]
+        'INSERT INTO attendance_records (user_id, offering_id, checkin_date, created_at) VALUES (?, ?, ?, ?)',
+        [userId, offeringId, todayStr, fullDateTimeStr]
       );
       
       const [users] = await db.query('SELECT name FROM users WHERE id = ?', [userId]);
       return res.json({ success: true, name: users[0]?.name || "隨喜訪客", message: "服務簽到成功" });
     }
 
-    // 🧘‍♂️ 分流 B：密集班課程 (如：健身班、減壓班)
+    // 🧘‍♂️ 分流 B：密集班課程
     if (currentOffering.type === 'course') {
       let currentSlot = null;
       
@@ -225,11 +232,12 @@ app.post("/checkin/:id", async (req, res) => {
         return res.json({ success: false, message: `此學員的【${slotName}】已完成點名，請勿重複掃描` });
       }
 
+      // 🌟 已將 NOW() 替換為洛杉磯時間
       await db.query(
         `INSERT INTO attendance_records 
          (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
-         VALUES (?, ?, ?, ?, ?, NOW())`,
-        [userId, offeringId, todayStr, dayNumber, currentSlot]
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [userId, offeringId, todayStr, dayNumber, currentSlot, fullDateTimeStr]
       );
 
       await refreshAttendanceRate(userId, offeringId);
@@ -361,8 +369,7 @@ app.get("/admin/export-excel", async (req, res) => {
 
 app.post("/api/course-checkin", async (req, res) => {
   const { userId, offeringId } = req.body;
-  const nowTimeStr = new Date().toTimeString().split(' ')[0];
-  const today = new Date().toISOString().slice(0, 10);
+  const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
   try {
     const [courseRows] = await db.query(`SELECT start_date, slot_1_start, slot_1_end, slot_2_start, slot_2_end, slot_3_start, slot_3_end FROM offerings WHERE id = ?`, [offeringId]);
@@ -372,16 +379,17 @@ app.post("/api/course-checkin", async (req, res) => {
     let matchedSlot = null;
     let slotLabel = "";
 
-    if (isTimeBetween(nowTimeStr, c.slot_1_start, c.slot_1_end)) { matchedSlot = 'slot_1'; slotLabel = '第一節簽到'; }
-    else if (isTimeBetween(nowTimeStr, c.slot_2_start, c.slot_2_end)) { matchedSlot = 'slot_2'; slotLabel = '第二節簽到'; }
-    else if (isTimeBetween(nowTimeStr, c.slot_3_start, c.slot_3_end)) { matchedSlot = 'slot_3'; slotLabel = '第三節簽退'; }
+    if (isTimeBetween(nowTime, c.slot_1_start, c.slot_1_end)) { matchedSlot = 'slot_1'; slotLabel = '第一節簽到'; }
+    else if (isTimeBetween(nowTime, c.slot_2_start, c.slot_2_end)) { matchedSlot = 'slot_2'; slotLabel = '第二節簽到'; }
+    else if (isTimeBetween(nowTime, c.slot_3_start, c.slot_3_end)) { matchedSlot = 'slot_3'; slotLabel = '第三節簽退'; }
 
     if (!matchedSlot) return res.status(400).json({ success: false, message: "❌ 目前非本課程規定的打卡時間！" });
 
-    const dayDiff = Math.floor((new Date(today) - new Date(c.start_date)) / (1000 * 60 * 60 * 24)) + 1;
+    const dayDiff = Math.floor((new Date(todayStr) - new Date(c.start_date)) / (1000 * 60 * 60 * 24)) + 1;
     const dayNumber = dayDiff > 0 ? dayDiff : 1; 
 
-    await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = NOW()`, [userId, offeringId, today, dayNumber, matchedSlot]);
+    // 🌟 已將 NOW() 替換為洛杉磯時間
+    await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = ?`, [userId, offeringId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]);
     await refreshAttendanceRate(userId, offeringId);
     res.json({ success: true, message: `✅ [${slotLabel}] 成功！` });
   } catch (err) {
@@ -407,10 +415,11 @@ app.get("/admin/course-attendance/:offeringId", async (req, res) => {
 
 app.post("/admin/toggle-attendance", async (req, res) => {
   const { userId, offeringId, dayNumber, slotType, status } = req.body;
-  const today = new Date().toISOString().slice(0, 10);
+  const { todayStr, fullDateTimeStr } = getLAFormattedDateTime();
   try {
     if (status === true) {
-      await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = NOW()`, [userId, offeringId, today, dayNumber, slotType]);
+      // 🌟 已將 NOW() 替換為洛杉磯時間
+      await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = ?`, [userId, offeringId, todayStr, dayNumber, slotType, fullDateTimeStr, fullDateTimeStr]);
     } else {
       await db.query("DELETE FROM attendance_records WHERE user_id = ? AND offering_id = ? AND day_number = ? AND slot_type = ?", [userId, offeringId, dayNumber, slotType]);
     }
