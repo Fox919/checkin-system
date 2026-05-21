@@ -197,22 +197,22 @@ app.post("/checkin/:id", async (req, res) => {
       return res.json({ success: true, name: users[0]?.name || "隨喜訪客", message: "服務簽到成功" });
     }
 
-    // 🧘‍♂️ 分流 B：密集班課程
+    // 🧘‍♂️ 分流 B：密集班課程 (動態讀取資料庫 config 設定)
     if (currentOffering.type === 'course') {
       let currentSlot = null;
       
+      // 解析資料庫傳過來的 config JSON 物件
+      const config = typeof currentOffering.config === 'string' 
+        ? JSON.parse(currentOffering.config || '{}') 
+        : (currentOffering.config || {});
+
       const dayDiff = Math.floor((new Date(todayStr) - new Date(currentOffering.start_date)) / (1000 * 60 * 60 * 24)) + 1;
       const dayNumber = dayDiff > 0 ? dayDiff : 1; 
 
-      // 🧠 依據課程名稱判定時段
-      if (currentOffering.title.includes('減壓')) {
-        if (nowTime >= '13:00:00' && nowTime <= '16:30:00') currentSlot = 'slot_1'; 
-        if (nowTime >= '16:31:00' && nowTime <= '20:00:00') currentSlot = 'slot_3'; 
-      } else {
-        if (nowTime >= '07:00:00' && nowTime <= '11:45:00') currentSlot = 'slot_1'; 
-        if (nowTime >= '11:46:00' && nowTime <= '16:00:00') currentSlot = 'slot_2'; 
-        if (nowTime >= '16:01:00' && nowTime <= '20:30:00') currentSlot = 'slot_3'; 
-      }
+      // 🌟 完美動態判定：直接拿現在時間 nowTime 去比對資料庫後台設定的時段
+      if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) currentSlot = 'slot_1';
+      else if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) currentSlot = 'slot_2';
+      else if (isTimeBetween(nowTime, config.slot_3_start, config.slot_3_end)) currentSlot = 'slot_3';
 
       if (!currentSlot) {
         return res.json({ 
@@ -220,6 +220,8 @@ app.post("/checkin/:id", async (req, res) => {
           message: `當前時間 (${nowTime.slice(0, 5)}) 暫無開放的點名時段` 
         });
       }
+
+      // ... 底下的防重複刷卡、寫入資料庫邏輯完全不需要變動
 
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
