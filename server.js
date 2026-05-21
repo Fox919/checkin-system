@@ -152,45 +152,113 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// 5. 簽到 (原有每日大門簽到)
+// 5. 簽到 (支援密集班多時段與一般服務分流)
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
+  
+  // 🆕 1. 獲取前端管理員選擇的課程期次 ID (若前端沒傳，預設為 1)
+  const offeringId = req.query.offeringId || 1; 
+  
+  const todayStr = moment().format('YYYY-MM-DD');
+  const nowTime = moment().format('HH:mm:ss');
+
   try {
-    const [rows] = await db.query(
-      "SELECT name, user_type, (SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = CURDATE()) as hasCheckedInToday FROM users WHERE id = ?", 
-      [userId, userId]
-    );
-    
-    if (rows.length === 0) return res.status(404).json({ error: "找不到用戶" });
-    const { name, user_type, hasCheckedInToday } = rows[0];
-    
-    if (hasCheckedInToday > 0) {
+    // 🆕 2. 撈取該課程/服務的詳細設定與型態
+    const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [offeringId]);
+    if (offerings.length === 0) {
+      return res.status(404).json({ success: false, message: "找不到該課程或服務期次" });
+    }
+    const currentOffering = offerings[0];
+
+    // -------------------------------------------------------------
+    // 🌸 分流 A：一般服務 (如：一對一能量加持、諮詢問事) -> 保持「一天隻能簽到一次」
+    // -------------------------------------------------------------
+    if (currentOffering.type === 'service') {
+      const [existing] = await db.query(
+        'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND DATE(created_at) = ?',
+        [userId, offeringId, todayStr]
+      );
+      
+      if (existing.length > 0) {
+        return res.json({ success: false, message: "該學員今日此服務已簽到過囉！" });
+      }
+      
+      // 寫入基本簽到紀錄
+      await db.query(
+        'INSERT INTO attendance_records (user_id, offering_id, created_at) VALUES (?, ?, NOW())',
+        [userId, offeringId]
+      );
+      
+      // 撈取名字回傳
+      const [users] = await db.query('SELECT name FROM users WHERE id = ?', [userId]);
+      return res.json({ success: true, name: users[0]?.name || "隨喜訪客", message: "服務簽到成功" });
+    }
+
+    // -------------------------------------------------------------
+    // 🧘‍♂️ 分流 B：密集班課程 (如：健身班、減壓班) -> 啟動「時段智慧防重複邏輯」
+    // -------------------------------------------------------------
+    if (currentOffering.type === 'course') {
+      let currentSlot = null;
+      let dayNumber = 1; // 💡 提示：實務上你也可以加上依今日日期比對這是該班級第幾天的邏輯
+
+      // 🧠 智慧判斷：依據課程名稱或類型判定點名時段
+      if (currentOffering.title.includes('減壓')) {
+        // 🧘 減壓下午班 (只打卡 2 次)
+        if (nowTime >= '13:00:00' && nowTime <= '16:30:00') currentSlot = 'slot_1'; // 下午簽到
+        if (nowTime >= '16:31:00' && nowTime <= '20:00:00') currentSlot = 'slot_3'; // 傍晚簽退
+      } else {
+        // 🏋️ 健身班等全天課程 (要打卡 3 次)
+        if (nowTime >= '07:00:00' && nowTime <= '11:45:00') currentSlot = 'slot_1'; // 上午簽到
+        if (nowTime >= '11:46:00' && nowTime <= '16:00:00') currentSlot = 'slot_2'; // 下午簽到
+        if (nowTime >= '16:01:00' && nowTime <= '20:30:00') currentSlot = 'slot_3'; // 下課簽退
+      }
+
+      // 如果當前時間不在任何允許的點名範圍內
+      if (!currentSlot) {
+        return res.json({ 
+          success: false, 
+          message: `當前時間 (${nowTime.slice(0, 5)}) 暫無開放的點名時段` 
+        });
+      }
+
+      // 🆕 3. 【核心防禦】精準檢查「今天 + 這個特定時段」有沒有點過名了
+      const [slotExisting] = await db.query(
+        `SELECT id FROM attendance_records 
+         WHERE user_id = ? AND offering_id = ? AND DATE(created_at) = ? AND slot_type = ?`,
+        [userId, offeringId, todayStr, currentSlot]
+      );
+
+      if (slotExisting.length > 0) {
+        const slotName = currentSlot === 'slot_1' ? '首節簽到' : currentSlot === 'slot_2' ? '午後半段' : '下課簽退';
+        return res.json({ success: false, message: `此學員的【${slotName}】已完成點名，請勿重複掃描` });
+      }
+
+      // 🆕 4. 驗證通過，寫入考勤表，並帶入大看板必備的 day_number 與 slot_type
+      await db.query(
+        `INSERT INTO attendance_records 
+         (user_id, offering_id, day_number, slot_type, created_at) 
+         VALUES (?, ?, ?, ?, NOW())`,
+        [userId, offeringId, dayNumber, currentSlot]
+      );
+
+      // 撈取學員真實姓名
+      const [users] = await db.query('SELECT name FROM users WHERE id = ?', [userId]);
+      const studentName = users[0] ? users[0].name : "未知學員";
+
       return res.json({ 
         success: true, 
-        name, 
-        already_done: true,
-        message: "您今天已經簽到過囉 😊" 
+        name: studentName,
+        message: "點名成功" 
       });
     }
 
-    let targetType = user_type?.toLowerCase().includes('newcomer') ? 'visitor' : user_type;
-
-    await db.query(
-      "UPDATE users SET status = 'checked-in', user_type = ?, last_checkin_time = NOW() WHERE id = ?", 
-      [targetType, userId]
-    );
-
-    await db.query(
-      "INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, NOW(), CURDATE())", 
-      [userId]
-    );
-    
-    res.json({ success: true, name, user_type: targetType });
-  } catch (err) {
-    console.error("簽到錯誤:", err);
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error("後端簽到出錯:", error);
+    return res.status(500).json({ success: false, message: "伺服器資料庫發生異常" });
   }
 });
+
+
 
 // 5.5 更新接待人
 app.post("/admin/update-receptionist", async (req, res) => {
