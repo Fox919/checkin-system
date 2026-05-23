@@ -31,13 +31,25 @@ const db = mysql.createPool({
 
 // --- 🛠️ 核心輔助函數區 ---
 
-// 1. 檢查目前時間是否在指定的「開始」與「結束」時間內
+// 1. 安全解析 JSON 避免崩潰
+function safeParseJSON(jsonStr, fallback = {}) {
+  if (!jsonStr) return fallback;
+  if (typeof jsonStr === 'object') return jsonStr;
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.error("❌ JSON 解析失敗，使用備用配置:", e.message);
+    return fallback;
+  }
+}
+
+// 2. 檢查目前時間是否在指定的「開始」與「結束」時間內
 function isTimeBetween(nowTimeStr, startTimeStr, endTimeStr) {
   if (!startTimeStr || !endTimeStr) return false;
   return nowTimeStr >= startTimeStr && nowTimeStr <= endTimeStr;
 }
 
-// 2. 獲取當前洛杉磯精準時間物件的輔助函式
+// 3. 獲取當前洛杉磯精準時間物件
 function getLAFormattedDateTime() {
   const d = new Date();
   const dateStr = d.toLocaleDateString('sv-SE', { timeZone: 'America/Los_Angeles' });
@@ -45,11 +57,33 @@ function getLAFormattedDateTime() {
   return {
     todayStr: dateStr,
     nowTime: timeStr,
-    fullDateTimeStr: `${dateStr} ${timeStr}` // 用來取代資料庫的 NOW()
+    fullDateTimeStr: `${dateStr} ${timeStr}`
   };
 }
 
-// 3. 核心計算函數：自動刷新學員的出勤率
+// 4. 統一匹配課程簽到時段
+function matchCourseSlot(nowTime, config) {
+  if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) return { slot: 'slot_1', label: '第一節簽到' };
+  if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) return { slot: 'slot_2', label: '第二節簽到' };
+  if (isTimeBetween(nowTime, config.slot_3_start, config.slot_3_end)) return { slot: 'slot_3', label: '第三節簽退' };
+  return { slot: null, label: '' };
+}
+
+// 5. 統一計算密集班天數（安全抗 DST 擾動）
+function calculateDayNumber(todayStr, startDateInput) {
+  const startDateStr = startDateInput instanceof Date 
+    ? startDateInput.toISOString().slice(0, 10) 
+    : startDateInput.slice(0, 10);
+  
+  // 強制設為中午 12 點進行相減，徹底避開 DST 日光節約時間增減 1 小時的四捨五入臨界點
+  const tDate = new Date(`${todayStr}T12:00:00`);
+  const sDate = new Date(`${startDateStr}T12:00:00`);
+  
+  const dayDiff = Math.round((tDate - sDate) / (1000 * 60 * 60 * 24)) + 1;
+  return dayDiff > 0 ? dayDiff : 1;
+}
+
+// 6. 核心計算函數：自動刷新學員的出勤率
 async function refreshAttendanceRate(userId, offeringId) {
   const [course] = await db.query("SELECT total_checkins_required FROM offerings WHERE id = ?", [offeringId]);
   const totalRequired = course[0]?.total_checkins_required || 24;
@@ -59,7 +93,6 @@ async function refreshAttendanceRate(userId, offeringId) {
     [userId, offeringId]
   );
   const attendedCount = attendance[0].attended;
-
   const attendanceRate = ((attendedCount / totalRequired) * 100).toFixed(2);
 
   await db.query(
@@ -71,7 +104,7 @@ async function refreshAttendanceRate(userId, offeringId) {
 }
 
 
-// --- 📄 路由重構列表 ---
+// --- 📄 路由列表 ---
 
 app.get('/', (req, res) => res.status(200).send('✅ Check-in System API is running!'));
 
@@ -158,7 +191,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// 5. 🚀 簽到入口
+// 簽到入口
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   const offeringId = req.query.offeringId || 1; 
@@ -172,61 +205,60 @@ app.post("/checkin/:id", async (req, res) => {
     }
     const currentOffering = offerings[0];
 
-    // 🌸 分流 A：一般服務
-    if (currentOffering.type === 'service') {
+    const [users] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [userId]);
+    if (users.length === 0) {
+      return res.status(444).json({ success: false, message: "找不到此成員資料" });
+    }
+    const currentUser = users[0];
+    const studentName = currentUser.name || "隨喜訪客";
+    const userType = currentUser.user_type || "Visitor";
+
+    // 🌸 分流 A：一般服務 或 非學員身份
+    if (currentOffering.type === 'service' || userType !== 'Student') {
       const [existing] = await db.query(
-        'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND LEFT(created_at, 10) = ?',
+        'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
         [userId, offeringId, todayStr]
       );
       
       if (existing.length > 0) {
-        return res.json({ success: false, message: "該學員今日此服務已簽到過囉！" });
+        return res.json({ success: false, message: `【${studentName}】今日已完成簽到，請勿重複掃描` });
       }
       
       await db.query(
-        'INSERT INTO attendance_records (user_id, offering_id, checkin_date, created_at) VALUES (?, ?, ?, ?)',
+        'INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, "regular", ?)',
         [userId, offeringId, todayStr, fullDateTimeStr]
       );
       
-      const [users] = await db.query('SELECT name FROM users WHERE id = ?', [userId]);
-      return res.json({ success: true, name: users[0]?.name || "隨喜訪客", message: "服務簽到成功" });
+      const roleLabel = userType === 'Volunteer' ? '義工' : userType === 'Venerable' ? '法師' : '訪客';
+      return res.json({ 
+        success: true, 
+        name: studentName, 
+        message: `${roleLabel}簽到成功！歡迎來到現場。` 
+      });
     }
 
-    // 🧘‍♂️ 分流 B：密集班課程
-    if (currentOffering.type === 'course') {
-      let currentSlot = null;
-      
-      const config = typeof currentOffering.config === 'string' 
-        ? JSON.parse(currentOffering.config || '{}') 
-        : (currentOffering.config || {});
-
-      // 修正細節 1：確保開課日期轉為純字串，並用 Math.round 防止美國 DST 日光節約時間少算一天
-      const startDateStr = currentOffering.start_date instanceof Date 
-        ? currentOffering.start_date.toISOString().slice(0, 10) 
-        : currentOffering.start_date.slice(0, 10);
-      const dayDiff = Math.round((new Date(todayStr) - new Date(startDateStr)) / (1000 * 60 * 60 * 24)) + 1;
-      const dayNumber = dayDiff > 0 ? dayDiff : 1; 
-
-      if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) currentSlot = 'slot_1';
-      else if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) currentSlot = 'slot_2';
-      else if (isTimeBetween(nowTime, config.slot_3_start, config.slot_3_end)) currentSlot = 'slot_3';
+    // 🧘‍♂️ 分流 B：密集班課程 且 是 學員
+    if (currentOffering.type === 'course' && userType === 'Student') {
+      const config = safeParseJSON(currentOffering.config);
+      const { slot: currentSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
 
       if (!currentSlot) {
         return res.json({ 
           success: false, 
-          message: `當前時間 (${nowTime.slice(0, 5)}) 暫無開放的點名時段` 
+          message: `學員【${studentName}】目前非開放點名時間。當前時間：${nowTime.slice(0, 5)}` 
         });
       }
 
+      const dayNumber = calculateDayNumber(todayStr, currentOffering.start_date);
+
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
-         WHERE user_id = ? AND offering_id = ? AND LEFT(created_at, 10) = ? AND slot_type = ?`,
+         WHERE user_id = ? AND offering_id = ? AND checkin_date = ? AND slot_type = ?`,
         [userId, offeringId, todayStr, currentSlot]
       );
 
       if (slotExisting.length > 0) {
-        const slotName = currentSlot === 'slot_1' ? '首節簽到' : currentSlot === 'slot_2' ? '午後半段' : '下課簽退';
-        return res.json({ success: false, message: `此學員的【${slotName}】已完成點名，請勿重複掃描` });
+        return res.json({ success: false, message: `學員【${studentName}】的【${slotLabel}】已完成點名，請勿重複掃描` });
       }
 
       await db.query(
@@ -238,13 +270,10 @@ app.post("/checkin/:id", async (req, res) => {
 
       await refreshAttendanceRate(userId, offeringId);
 
-      const [users] = await db.query('SELECT name FROM users WHERE id = ?', [userId]);
-      const studentName = users[0] ? users[0].name : "未知學員";
-
       return res.json({ 
         success: true, 
         name: studentName,
-        message: "點名成功" 
+        message: `第 ${dayNumber} 天【${slotLabel}】點名成功！` 
       });
     }
 
@@ -298,7 +327,7 @@ app.get('/api/offerings', async (req, res) => {
     const [rows] = await db.query("SELECT * FROM offerings");
     const data = rows.map(row => ({
       ...row,
-      config: typeof row.config === 'string' ? JSON.parse(row.config || '{}') : row.config
+      config: safeParseJSON(row.config)
     }));
     res.json(data);
   } catch (err) {
@@ -353,7 +382,6 @@ app.get("/admin/export-excel", async (req, res) => {
     const filterDate = req.query.date;
     let sql = `SELECT u.name AS '全名', u.phone AS '電話', u.user_type AS '身份', u.lang AS '語言', u.referrer_name AS '介紹人', c.checkin_time AS '簽到時間' FROM checkins c JOIN users u ON c.user_id = u.id`;
     
-    // 修正細節 2：改用 LEFT(c.checkin_time, 10) 字串比對，徹底排除雲端資料庫的本地時區干擾
     const [rows] = filterDate 
       ? await db.query(sql + " WHERE LEFT(c.checkin_time, 10) = ?", [filterDate]) 
       : await db.query(sql);
@@ -373,25 +401,24 @@ app.post("/api/course-checkin", async (req, res) => {
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
   try {
-    const [courseRows] = await db.query(`SELECT start_date, slot_1_start, slot_1_end, slot_2_start, slot_2_end, slot_3_start, slot_3_end FROM offerings WHERE id = ?`, [offeringId]);
+    const [courseRows] = await db.query(`SELECT start_date, config FROM offerings WHERE id = ?`, [offeringId]);
     if (courseRows.length === 0) return res.status(444).json({ success: false, message: "找不到該課程期次" });
     
     const c = courseRows[0];
-    let matchedSlot = null;
-    let slotLabel = "";
-
-    if (isTimeBetween(nowTime, c.slot_1_start, c.slot_1_end)) { matchedSlot = 'slot_1'; slotLabel = '第一節簽到'; }
-    else if (isTimeBetween(nowTime, c.slot_2_start, c.slot_2_end)) { matchedSlot = 'slot_2'; slotLabel = '第二節簽到'; }
-    else if (isTimeBetween(nowTime, c.slot_3_start, c.slot_3_end)) { matchedSlot = 'slot_3'; slotLabel = '第三節簽退'; }
+    const config = safeParseJSON(c.config);
+    const { slot: matchedSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
 
     if (!matchedSlot) return res.status(400).json({ success: false, message: "❌ 目前非本課程規定的打卡時間！" });
 
-    // 修正細節 1：確保開課日期轉為純字串，並用 Math.round 防止美國 DST 日光節約時間少算一天
-    const startDateStr = c.start_date instanceof Date ? c.start_date.toISOString().slice(0, 10) : c.start_date.slice(0, 10);
-    const dayDiff = Math.round((new Date(todayStr) - new Date(startDateStr)) / (1000 * 60 * 60 * 24)) + 1;
-    const dayNumber = dayDiff > 0 ? dayDiff : 1; 
+    const dayNumber = calculateDayNumber(todayStr, c.start_date);
 
-    await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = ?`, [userId, offeringId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]);
+    await db.query(
+      `INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
+       VALUES (?, ?, ?, ?, ?, ?) 
+       ON DUPLICATE KEY UPDATE created_at = ?`, 
+      [userId, offeringId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]
+    );
+    
     await refreshAttendanceRate(userId, offeringId);
     res.json({ success: true, message: `✅ [${slotLabel}] 成功！` });
   } catch (err) {
@@ -444,8 +471,9 @@ app.post("/admin/evaluate-graduation", async (req, res) => {
     const { todayStr } = getLAFormattedDateTime(); 
     const datePart = todayStr.slice(0, 7).replace('-', ''); 
     
-    const randomPart = Math.floor(1000 + Math.random() * 9000); 
-    const newCertificateNo = `BODHI-${datePart}-${randomPart}`;
+    // 使用微秒戳記替代純隨機數，進一步降低高併發下證書編號撞號風險
+    const uniquePart = Date.now().toString().slice(-4);
+    const newCertificateNo = `BODHI-${datePart}-${uniquePart}`;
 
     await db.query("UPDATE course_enrollments SET status = 'graduated', certificate_no = ? WHERE user_id = ? AND offering_id = ?", [newCertificateNo, userId, offeringId]);
     res.json({ success: true, certificate_no: newCertificateNo });
