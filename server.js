@@ -3,7 +3,7 @@ import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
 import cors from 'cors';
-
+import QRCode from 'qrcode'; // 記得在檔案頂部引入
 dotenv.config();
 
 const app = express();
@@ -102,6 +102,50 @@ async function refreshAttendanceRate(userId, offeringId) {
     [userId, offeringId, attendanceRate, attendanceRate]
   );
 }
+
+// 暫時性路由：生成所有學員的姓名與 QR Code Base46 圖片資料
+app.get("/admin/temporary-badges", async (req, res) => {
+  try {
+    // 撈取所有學員的 ID、姓名、電話與 QR Code 欄位
+    const sql = `SELECT id, name, phone, qr_code FROM users WHERE user_type = 'Student' ORDER BY name ASC`;
+    const [students] = await db.query(sql);
+
+    // 併發處理所有學員的 QR Code 轉換
+    const badgesData = await Promise.all(students.map(async (student) => {
+      // 如果資料庫沒有建立 qr_code，則拿 ID 或手機當作預備內容
+      const qrContent = student.qr_code || `QR_${student.phone || student.id}`;
+      
+      try {
+        // 將 QR Code 內容轉換成 Base64 圖片字串 (Data URL)
+        const qrImageUrl = await QRCode.toDataURL(qrContent, {
+          width: 250,  // 圖片寬度
+          margin: 2,   // 邊框留白
+          errorCorrectionLevel: 'H' // 高容錯率，印出來比較好掃
+        });
+
+        return {
+          id: student.id,
+          name: student.name,
+          qrCodeImage: qrImageUrl // 這可以直接放入前端的 <img src="..." />
+        };
+      } catch (qrErr) {
+        console.error(`學員 ${student.name} 二維碼生成失敗:`, qrErr.message);
+        return {
+          id: student.id,
+          name: student.name,
+          qrCodeImage: null
+        };
+      }
+    }));
+
+    res.json(badgesData);
+  } catch (err) {
+    console.error("生成臨時學員證資料失敗:", err);
+    res.status(500).json({ error: "伺服器錯誤，無法生成學員證資料" });
+  }
+});
+
+
 
 
 // --- 📄 路由列表 ---
