@@ -236,22 +236,36 @@ app.post("/register", async (req, res) => {
 });
 
 // 簽到入口
+// 舊路由的同步修復版：防止前端未更新時網址錯配引發 500 錯誤
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
-  const offeringId = req.query.offeringId || 1; 
+  // 同時相容網址後面的 ?offeringId=1 與 Body 傳入的參數
+  const offeringId = req.query.offeringId || req.body.offeringId || 1; 
   
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
+  const parsedUserId = parseInt(userId, 10);
+  const parsedOfferingId = parseInt(offeringId, 10);
+
+  if (isNaN(parsedUserId)) {
+    return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID" });
+  }
+
   try {
-    const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [offeringId]);
-    if (offerings.length === 0) {
-      return res.status(444).json({ success: false, message: "找不到該課程或服務期次" });
+    const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [parsedOfferingId]);
+    if (!offerings || offerings.length === 0) {
+      return res.status(444).json({ success: false, message: `❌ 找不到該課程期次 (ID: ${parsedOfferingId})` });
     }
     const currentOffering = offerings[0];
 
-    const [users] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [userId]);
-    if (users.length === 0) {
-      return res.status(444).json({ success: false, message: "找不到此成員資料" });
+    // 🌟 關鍵防呆：確保 start_date 存在，避免後續 calculateDayNumber 崩潰
+    if (!currentOffering.start_date) {
+      return res.status(500).json({ success: false, message: "❌ 系統錯誤：該課程在資料庫中未設定開始日期" });
+    }
+
+    const [users] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [parsedUserId]);
+    if (!users || users.length === 0) {
+      return res.status(444).json({ success: false, message: "❌ 找不到此成員資料" });
     }
     const currentUser = users[0];
     const studentName = currentUser.name || "隨喜訪客";
@@ -261,7 +275,7 @@ app.post("/checkin/:id", async (req, res) => {
     if (currentOffering.type === 'service' || userType !== 'Student') {
       const [existing] = await db.query(
         'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
-        [userId, offeringId, todayStr]
+        [parsedUserId, parsedOfferingId, todayStr]
       );
       
       if (existing.length > 0) {
@@ -270,7 +284,7 @@ app.post("/checkin/:id", async (req, res) => {
       
       await db.query(
         'INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, "regular", ?)',
-        [userId, offeringId, todayStr, fullDateTimeStr]
+        [parsedUserId, parsedOfferingId, todayStr, fullDateTimeStr]
       );
       
       const roleLabel = userType === 'Volunteer' ? '義工' : userType === 'Venerable' ? '法師' : '訪客';
@@ -293,12 +307,13 @@ app.post("/checkin/:id", async (req, res) => {
         });
       }
 
+      // 安全計算天數
       const dayNumber = calculateDayNumber(todayStr, currentOffering.start_date);
 
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
          WHERE user_id = ? AND offering_id = ? AND checkin_date = ? AND slot_type = ?`,
-        [userId, offeringId, todayStr, currentSlot]
+        [parsedUserId, parsedOfferingId, todayStr, currentSlot]
       );
 
       if (slotExisting.length > 0) {
@@ -309,10 +324,10 @@ app.post("/checkin/:id", async (req, res) => {
         `INSERT INTO attendance_records 
          (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [userId, offeringId, todayStr, dayNumber, currentSlot, fullDateTimeStr]
+        [parsedUserId, parsedOfferingId, todayStr, dayNumber, currentSlot, fullDateTimeStr]
       );
 
-      await refreshAttendanceRate(userId, offeringId);
+      await refreshAttendanceRate(parsedUserId, parsedOfferingId);
 
       return res.json({ 
         success: true, 
@@ -322,12 +337,10 @@ app.post("/checkin/:id", async (req, res) => {
     }
 
   } catch (error) {
-    console.error("後端簽到出錯:", error);
-    return res.status(500).json({ success: false, message: "伺服器資料庫發生異常" });
+    console.error("後端舊路由簽到出錯:", error);
+    return res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${error.message}` });
   }
-});
-
-app.post("/admin/update-receptionist", async (req, res) => {
+});app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
   try {
     await db.query("UPDATE users SET receptionist_name = ? WHERE id = ?", [receptionistName, userId]);
