@@ -3,7 +3,7 @@ import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
 import cors from 'cors';
-import QRCode from 'qrcode'; // 記得在檔案頂部引入
+import QRCode from 'qrcode'; 
 dotenv.config();
 
 const app = express();
@@ -69,21 +69,7 @@ function matchCourseSlot(nowTime, config) {
   return { slot: null, label: '' };
 }
 
-// 5. 統一計算密集班天數（安全抗 DST 擾動）
-function calculateDayNumber(todayStr, startDateInput) {
-  const startDateStr = startDateInput instanceof Date 
-    ? startDateInput.toISOString().slice(0, 10) 
-    : startDateInput.slice(0, 10);
-  
-  // 強制設為中午 12 點進行相減，徹底避開 DST 日光節約時間增減 1 小時的四捨五入臨界點
-  const tDate = new Date(`${todayStr}T12:00:00`);
-  const sDate = new Date(`${startDateStr}T12:00:00`);
-  
-  const dayDiff = Math.round((tDate - sDate) / (1000 * 60 * 60 * 24)) + 1;
-  return dayDiff > 0 ? dayDiff : 1;
-}
-
-// 6. 核心計算函數：自動刷新學員的出勤率
+// 5. 核心計算函數：自動刷新學員的出勤率
 async function refreshAttendanceRate(userId, offeringId) {
   const [course] = await db.query("SELECT total_checkins_required FROM offerings WHERE id = ?", [offeringId]);
   const totalRequired = course[0]?.total_checkins_required || 24;
@@ -103,30 +89,26 @@ async function refreshAttendanceRate(userId, offeringId) {
   );
 }
 
-// 暫時性路由：生成所有學員的姓名與 QR Code Base46 圖片資料
+// 暫時性路由：生成所有學員的姓名與 QR Code Base64 圖片資料
 app.get("/admin/temporary-badges", async (req, res) => {
   try {
-    // 撈取所有學員的 ID、姓名、電話與 QR Code 欄位
     const sql = `SELECT id, name, phone, qr_code FROM users WHERE user_type = 'Student' ORDER BY name ASC`;
     const [students] = await db.query(sql);
 
-    // 併發處理所有學員的 QR Code 轉換
     const badgesData = await Promise.all(students.map(async (student) => {
-      // 如果資料庫沒有建立 qr_code，則拿 ID 或手機當作預備內容
       const qrContent = student.qr_code || `QR_${student.phone || student.id}`;
       
       try {
-        // 將 QR Code 內容轉換成 Base64 圖片字串 (Data URL)
         const qrImageUrl = await QRCode.toDataURL(qrContent, {
-          width: 250,  // 圖片寬度
-          margin: 2,   // 邊框留白
-          errorCorrectionLevel: 'H' // 高容錯率，印出來比較好掃
+          width: 250,  
+          margin: 2,   
+          errorCorrectionLevel: 'H' 
         });
 
         return {
           id: student.id,
           name: student.name,
-          qrCodeImage: qrImageUrl // 這可以直接放入前端的 <img src="..." />
+          qrCodeImage: qrImageUrl 
         };
       } catch (qrErr) {
         console.error(`學員 ${student.name} 二維碼生成失敗:`, qrErr.message);
@@ -144,9 +126,6 @@ app.get("/admin/temporary-badges", async (req, res) => {
     res.status(500).json({ error: "伺服器錯誤，無法生成學員證資料" });
   }
 });
-
-
-
 
 // --- 📄 路由列表 ---
 
@@ -235,11 +214,11 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// 簽到入口
-// 舊路由的同步修復版：防止前端未更新時網址錯配引發 500 錯誤
+// ==========================================
+// 🧘‍♂️ 簽到路由分流 A：修復後的舊網址入口
+// ==========================================
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
-  // 同時相容網址後面的 ?offeringId=1 與 Body 傳入的參數
   const offeringId = req.query.offeringId || req.body.offeringId || 1; 
   
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
@@ -258,11 +237,6 @@ app.post("/checkin/:id", async (req, res) => {
     }
     const currentOffering = offerings[0];
 
-    // 🌟 關鍵防呆：確保 start_date 存在，避免後續 calculateDayNumber 崩潰
-    if (!currentOffering.start_date) {
-      return res.status(500).json({ success: false, message: "❌ 系統錯誤：該課程在資料庫中未設定開始日期" });
-    }
-
     const [users] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [parsedUserId]);
     if (!users || users.length === 0) {
       return res.status(444).json({ success: false, message: "❌ 找不到此成員資料" });
@@ -271,7 +245,7 @@ app.post("/checkin/:id", async (req, res) => {
     const studentName = currentUser.name || "隨喜訪客";
     const userType = currentUser.user_type || "Visitor";
 
-    // 🌸 分流 A：一般服務 或 非學員身份
+    // 🌸 分流 A-1：一般服務 或 非學員身份
     if (currentOffering.type === 'service' || userType !== 'Student') {
       const [existing] = await db.query(
         'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
@@ -295,7 +269,7 @@ app.post("/checkin/:id", async (req, res) => {
       });
     }
 
-    // 🧘‍♂️ 分流 B：密集班課程 且 是 學員
+    // 🌸 分流 A-2：密集班課程 且 是 學員
     if (currentOffering.type === 'course' && userType === 'Student') {
       const config = safeParseJSON(currentOffering.config);
       const { slot: currentSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
@@ -307,8 +281,8 @@ app.post("/checkin/:id", async (req, res) => {
         });
       }
 
-      // 安全計算天數
-      const dayNumber = calculateDayNumber(todayStr, currentOffering.start_date);
+      // 🌟 方案 A 核心變更：不再呼叫 calculateDayNumber，改採日期中的「日」數字
+      const dayNumber = parseInt(todayStr.split('-')[2], 10) || 1;
 
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
@@ -332,7 +306,7 @@ app.post("/checkin/:id", async (req, res) => {
       return res.json({ 
         success: true, 
         name: studentName,
-        message: `第 ${dayNumber} 天【${slotLabel}】點名成功！` 
+        message: `【${slotLabel}】點名成功！` 
       });
     }
 
@@ -340,131 +314,20 @@ app.post("/checkin/:id", async (req, res) => {
     console.error("後端舊路由簽到出錯:", error);
     return res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${error.message}` });
   }
-});app.post("/admin/update-receptionist", async (req, res) => {
-  const { userId, receptionistName } = req.body;
-  try {
-    await db.query("UPDATE users SET receptionist_name = ? WHERE id = ?", [receptionistName, userId]);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
-app.post("/admin/update-type/:id", async (req, res) => {
-  const userId = req.params.id;
-  const { new_type, offeringId } = req.body;
-  try {
-    await db.query("UPDATE users SET user_type = ? WHERE id = ?", [new_type, userId]);
-    if (offeringId) {
-      await db.query(
-        `INSERT INTO course_enrollments (user_id, offering_id, attendance_rate, status) 
-         VALUES (?, ?, 0.00, 'active') 
-         ON DUPLICATE KEY UPDATE status = 'active'`,
-        [userId, offeringId]
-      );
-    }
-    res.json({ success: true, message: `身份更新成功，並已成功同步至該課程！` });
-  } catch (err) {
-    res.status(500).json({ error: "操作失敗: " + err.message });
-  }
-});
-
-app.post("/admin/update-note", async (req, res) => {
-  const { userId, notes } = req.body;
-  try {
-    await db.query("UPDATE users SET notes = ? WHERE id = ?", [notes, userId]);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "備註更新失敗" });
-  }
-});
-
-app.get('/api/offerings', async (req, res) => {
-  try {
-    const [rows] = await db.query("SELECT * FROM offerings");
-    const data = rows.map(row => ({
-      ...row,
-      config: safeParseJSON(row.config)
-    }));
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/api/offerings/:id/config', async (req, res) => {
-  const { id } = req.params;
-  const { config } = req.body;
-  try {
-    await db.query("UPDATE offerings SET config = ? WHERE id = ?", [JSON.stringify(config), id]);
-    res.json({ success: true, message: "✅ 期次更新成功" });
-  } catch (err) {
-    res.status(500).json({ success: false, message: "❌ 資料庫更新失敗: " + err.message });
-  }
-});
-
-app.post("/book", async (req, res) => {
-  const { userId, itemId, bookingDate, bookingTime } = req.body;
-  try {
-    const [result] = await db.query("INSERT INTO bookings (user_id, offering_id, booking_date, booking_time, status) VALUES (?, ?, ?, ?, 'pending')", [userId, itemId, bookingDate, bookingTime || '全天']);
-    res.json({ success: true, bookingId: result.insertId });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/bookings', async (req, res) => {
-  try {
-    const [results] = await db.query("SELECT b.*, o.title, o.type, o.icon FROM bookings b JOIN offerings o ON b.offering_id = o.id WHERE b.user_id = ? ORDER BY b.booking_date DESC", [req.query.userId]);
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/admin/users", async (req, res) => {
-  try {
-    const sql = `
-      SELECT u.id, u.name, u.phone, u.email, u.user_type, u.lang, u.referrer_name, u.status, u.discovery_source, u.is_blessed, u.created_at, MAX(c.checkin_time) as last_checkin_time 
-      FROM users u LEFT JOIN checkins c ON u.id = c.user_id GROUP BY u.id ORDER BY u.id DESC`;
-    const [rows] = await db.query(sql);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/admin/export-excel", async (req, res) => {
-  try {
-    const filterDate = req.query.date;
-    let sql = `SELECT u.name AS '全名', u.phone AS '電話', u.user_type AS '身份', u.lang AS '語言', u.referrer_name AS '介紹人', c.checkin_time AS '簽到時間' FROM checkins c JOIN users u ON c.user_id = u.id`;
-    
-    const [rows] = filterDate 
-      ? await db.query(sql + " WHERE LEFT(c.checkin_time, 10) = ?", [filterDate]) 
-      : await db.query(sql);
-      
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
-  } catch (err) {
-    res.status(500).send("Export failed");
-  }
-});
-
+// ==========================================
+// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口
+// ==========================================
 app.post("/api/course-checkin", async (req, res) => {
-  // 🌟 容錯讀取：同時支援大寫 I (userId) 與小寫 i (userid / user_id)
   const incomingUserId = req.body.userId || req.body.user_id || req.body.userid;
   const incomingOfferingId = req.body.offeringId || req.body.offering_id || req.body.offeringid || 1;
 
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
-  // 強制轉換為十進位整數
   const parsedUserId = parseInt(incomingUserId, 10);
   const parsedOfferingId = parseInt(incomingOfferingId, 10);
 
-  // 安全檢查
   if (isNaN(parsedUserId)) {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID 格式" });
   }
@@ -473,8 +336,7 @@ app.post("/api/course-checkin", async (req, res) => {
   }
 
   try {
-    // 1. 檢查是否有這門課程
-    const [courseRows] = await db.query(`SELECT start_date, config, type FROM offerings WHERE id = ?`, [parsedOfferingId]);
+    const [courseRows] = await db.query(`SELECT config, type FROM offerings WHERE id = ?`, [parsedOfferingId]);
     
     if (!courseRows || courseRows.length === 0) {
       return res.status(444).json({ 
@@ -484,12 +346,7 @@ app.post("/api/course-checkin", async (req, res) => {
     }
     
     const c = courseRows[0];
-    
-    if (!c.start_date) {
-      return res.status(500).json({ success: false, message: "❌ 系統錯誤：該課程未設定開始日期" });
-    }
 
-    // 2. 檢查是否有此學員及身份
     const [userRows] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [parsedUserId]);
     if (!userRows || userRows.length === 0) {
       return res.status(444).json({ success: false, message: "❌ 簽到失敗：找不到此成員資料" });
@@ -498,7 +355,6 @@ app.post("/api/course-checkin", async (req, res) => {
     const studentName = currentUser.name || "未知成員";
     const userType = currentUser.user_type || "Visitor";
 
-    // 🌸 分流 A：一般服務 或 非學員身份 (比照你舊路由的邏輯，讓掃描器也能相容非學員)
     if (c.type === 'service' || userType !== 'Student') {
       const [existing] = await db.query(
         'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
@@ -521,7 +377,6 @@ app.post("/api/course-checkin", async (req, res) => {
       });
     }
 
-    // 🧘‍♂️ 分流 B：密集班課程 且 是學員
     const config = safeParseJSON(c.config);
     const { slot: matchedSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
 
@@ -532,10 +387,9 @@ app.post("/api/course-checkin", async (req, res) => {
       });
     }
 
-    // 安全地計算天數
-    const dayNumber = calculateDayNumber(todayStr, c.start_date);
+    // 🌟 方案 A 核心變更：不再呼叫 calculateDayNumber，改採日期中的「日」數字
+    const dayNumber = parseInt(todayStr.split('-')[2], 10) || 1;
 
-    // 檢查該時段是否重複簽到
     const [slotExisting] = await db.query(
       `SELECT id FROM attendance_records 
        WHERE user_id = ? AND offering_id = ? AND checkin_date = ? AND slot_type = ?`,
@@ -546,7 +400,6 @@ app.post("/api/course-checkin", async (req, res) => {
       return res.json({ success: false, message: `❌ 【${studentName}】的【${slotLabel}】已完成點名，請勿重複掃描` });
     }
 
-    // 寫入簽到紀錄
     await db.query(
       `INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
        VALUES (?, ?, ?, ?, ?, ?) 
@@ -555,10 +408,10 @@ app.post("/api/course-checkin", async (req, res) => {
     );
     
     await refreshAttendanceRate(parsedUserId, parsedOfferingId);
-    res.json({ success: true, message: `✅ 【${studentName}】第 ${dayNumber} 天【${slotLabel}】成功！` });
+    res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！` });
 
   } catch (err) {
-    console.error("❌ 後端簽到總入口出錯:", err);
+    console.error("❌ 後端新簽到路由出錯:", err);
     res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${err.message}` });
   }
 });
@@ -609,7 +462,6 @@ app.post("/admin/evaluate-graduation", async (req, res) => {
     const { todayStr } = getLAFormattedDateTime(); 
     const datePart = todayStr.slice(0, 7).replace('-', ''); 
     
-    // 使用微秒戳記替代純隨機數，進一步降低高併發下證書編號撞號風險
     const uniquePart = Date.now().toString().slice(-4);
     const newCertificateNo = `BODHI-${datePart}-${uniquePart}`;
 
