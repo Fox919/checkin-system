@@ -441,32 +441,99 @@ app.get("/admin/export-excel", async (req, res) => {
 });
 
 app.post("/api/course-checkin", async (req, res) => {
-  const { userId, offeringId } = req.body;
+  // 🌟 容錯讀取：同時支援大寫 I (userId) 與小寫 i (userid / user_id)
+  const incomingUserId = req.body.userId || req.body.user_id || req.body.userid;
+  const incomingOfferingId = req.body.offeringId || req.body.offering_id || req.body.offeringid || 1;
+
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
-  // 🌟 關鍵修正 1：強制將傳入的 ID 轉為整數數字，防止字串型態引發資料庫異常
-  const parsedUserId = parseInt(userId, 10);
-  const parsedOfferingId = parseInt(offeringId || 1, 10);
+  // 強制轉換為十進位整數
+  const parsedUserId = parseInt(incomingUserId, 10);
+  const parsedOfferingId = parseInt(incomingOfferingId, 10);
 
-  // 安全檢查：如果轉換失敗（例如拿到 NaN），直接攔截
+  // 安全檢查
   if (isNaN(parsedUserId)) {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID 格式" });
   }
+  if (isNaN(parsedOfferingId)) {
+    return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的課程 ID 格式" });
+  }
 
   try {
-    // 使用安全的數字進行查詢
-    const [courseRows] = await db.query(`SELECT start_date, config FROM offerings WHERE id = ?`, [parsedOfferingId]);
-    if (courseRows.length === 0) return res.status(444).json({ success: false, message: "找不到該課程期次" });
+    // 1. 檢查是否有這門課程
+    const [courseRows] = await db.query(`SELECT start_date, config, type FROM offerings WHERE id = ?`, [parsedOfferingId]);
+    
+    if (!courseRows || courseRows.length === 0) {
+      return res.status(444).json({ 
+        success: false, 
+        message: `❌ 簽到失敗：找不到課程期次 (收到 ID: ${parsedOfferingId})` 
+      });
+    }
     
     const c = courseRows[0];
+    
+    if (!c.start_date) {
+      return res.status(500).json({ success: false, message: "❌ 系統錯誤：該課程未設定開始日期" });
+    }
+
+    // 2. 檢查是否有此學員及身份
+    const [userRows] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [parsedUserId]);
+    if (!userRows || userRows.length === 0) {
+      return res.status(444).json({ success: false, message: "❌ 簽到失敗：找不到此成員資料" });
+    }
+    const currentUser = userRows[0];
+    const studentName = currentUser.name || "未知成員";
+    const userType = currentUser.user_type || "Visitor";
+
+    // 🌸 分流 A：一般服務 或 非學員身份 (比照你舊路由的邏輯，讓掃描器也能相容非學員)
+    if (c.type === 'service' || userType !== 'Student') {
+      const [existing] = await db.query(
+        'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
+        [parsedUserId, parsedOfferingId, todayStr]
+      );
+      
+      if (existing.length > 0) {
+        return res.json({ success: false, message: `【${studentName}】今日已完成簽到囉！` });
+      }
+      
+      await db.query(
+        'INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, "regular", ?)',
+        [parsedUserId, parsedOfferingId, todayStr, fullDateTimeStr]
+      );
+      
+      const roleLabel = userType === 'Volunteer' ? '義工' : userType === 'Venerable' ? '法師' : '訪客';
+      return res.json({ 
+        success: true, 
+        message: `✅ 【${studentName}】${roleLabel}簽到成功！` 
+      });
+    }
+
+    // 🧘‍♂️ 分流 B：密集班課程 且 是學員
     const config = safeParseJSON(c.config);
     const { slot: matchedSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
 
-    if (!matchedSlot) return res.status(400).json({ success: false, message: `❌ 目前非本課程規定的打卡時間！當前時間：${nowTime.slice(0, 5)}` });
+    if (!matchedSlot) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `❌ 【${studentName}】目前非開放點名時間。當前時間：${nowTime.slice(0, 5)}` 
+      });
+    }
 
+    // 安全地計算天數
     const dayNumber = calculateDayNumber(todayStr, c.start_date);
 
-    // 🌟 關鍵修正 2：帶入確保為數字型的 parsedUserId 與 parsedOfferingId
+    // 檢查該時段是否重複簽到
+    const [slotExisting] = await db.query(
+      `SELECT id FROM attendance_records 
+       WHERE user_id = ? AND offering_id = ? AND checkin_date = ? AND slot_type = ?`,
+      [parsedUserId, parsedOfferingId, todayStr, matchedSlot]
+    );
+
+    if (slotExisting.length > 0) {
+      return res.json({ success: false, message: `❌ 【${studentName}】的【${slotLabel}】已完成點名，請勿重複掃描` });
+    }
+
+    // 寫入簽到紀錄
     await db.query(
       `INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
        VALUES (?, ?, ?, ?, ?, ?) 
@@ -475,20 +542,15 @@ app.post("/api/course-checkin", async (req, res) => {
     );
     
     await refreshAttendanceRate(parsedUserId, parsedOfferingId);
-    res.json({ success: true, message: `✅ [${slotLabel}] 成功！` });
-  } catch (err) {
-    // 🌟 關鍵修正 3：在後端終端機印出最真實的資料庫報錯原因
-    console.error("❌ 資料庫寫入發生真實錯誤:", err);
-    
-    // 如果是因為外鍵約束（找不到這個人或這堂課）
-    if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') {
-      return res.status(500).json({ success: false, message: "❌ 簽到失敗：找不到該學員或課程資料（資料不一致）" });
-    }
+    res.json({ success: true, message: `✅ 【${studentName}】第 ${dayNumber} 天【${slotLabel}】成功！` });
 
-    // 將真實錯誤訊息丟回前端，這樣網頁就不會只顯示模糊的異常
+  } catch (err) {
+    console.error("❌ 後端簽到總入口出錯:", err);
     res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${err.message}` });
   }
 });
+
+
 app.get("/admin/course-attendance/:offeringId", async (req, res) => {
   const { offeringId } = req.params;
   try {
