@@ -3,7 +3,6 @@ import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
 import cors from 'cors';
-// 🌟 核心修正：這裡絕對不要寫 import moment，完全不依賴它！
 
 dotenv.config();
 
@@ -113,7 +112,6 @@ app.post("/register", async (req, res) => {
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
-  // 修正點 1：自動簽到時同步使用洛杉磯時間
   const { todayStr, fullDateTimeStr } = getLAFormattedDateTime();
 
   try {
@@ -148,7 +146,6 @@ app.post("/register", async (req, res) => {
     
     const userId = result.insertId;
     if (autoCheckin) {
-      // 🌟 已將 NOW() 與 CURDATE() 替換為洛杉磯精準時間
       await db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, ?, ?)", [userId, fullDateTimeStr, todayStr]);
     }
     res.json({ success: true, id: userId, name: fullName });
@@ -166,20 +163,19 @@ app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   const offeringId = req.query.offeringId || 1; 
   
-  // 使用優化後的洛杉磯時間物件
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
   try {
     const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [offeringId]);
     if (offerings.length === 0) {
-      return res.status(404).json({ success: false, message: "找不到該課程或服務期次" });
+      return res.status(444).json({ success: false, message: "找不到該課程或服務期次" });
     }
     const currentOffering = offerings[0];
 
     // 🌸 分流 A：一般服務
     if (currentOffering.type === 'service') {
       const [existing] = await db.query(
-        'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND DATE(created_at) = ?',
+        'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND LEFT(created_at, 10) = ?',
         [userId, offeringId, todayStr]
       );
       
@@ -187,7 +183,6 @@ app.post("/checkin/:id", async (req, res) => {
         return res.json({ success: false, message: "該學員今日此服務已簽到過囉！" });
       }
       
-      // 🌟 已將 NOW() 替換為洛杉磯時間
       await db.query(
         'INSERT INTO attendance_records (user_id, offering_id, checkin_date, created_at) VALUES (?, ?, ?, ?)',
         [userId, offeringId, todayStr, fullDateTimeStr]
@@ -197,19 +192,21 @@ app.post("/checkin/:id", async (req, res) => {
       return res.json({ success: true, name: users[0]?.name || "隨喜訪客", message: "服務簽到成功" });
     }
 
-    // 🧘‍♂️ 分流 B：密集班課程 (動態讀取資料庫 config 設定)
+    // 🧘‍♂️ 分流 B：密集班課程
     if (currentOffering.type === 'course') {
       let currentSlot = null;
       
-      // 解析資料庫傳過來的 config JSON 物件
       const config = typeof currentOffering.config === 'string' 
         ? JSON.parse(currentOffering.config || '{}') 
         : (currentOffering.config || {});
 
-      const dayDiff = Math.floor((new Date(todayStr) - new Date(currentOffering.start_date)) / (1000 * 60 * 60 * 24)) + 1;
+      // 修正細節 1：確保開課日期轉為純字串，並用 Math.round 防止美國 DST 日光節約時間少算一天
+      const startDateStr = currentOffering.start_date instanceof Date 
+        ? currentOffering.start_date.toISOString().slice(0, 10) 
+        : currentOffering.start_date.slice(0, 10);
+      const dayDiff = Math.round((new Date(todayStr) - new Date(startDateStr)) / (1000 * 60 * 60 * 24)) + 1;
       const dayNumber = dayDiff > 0 ? dayDiff : 1; 
 
-      // 🌟 完美動態判定：直接拿現在時間 nowTime 去比對資料庫後台設定的時段
       if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) currentSlot = 'slot_1';
       else if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) currentSlot = 'slot_2';
       else if (isTimeBetween(nowTime, config.slot_3_start, config.slot_3_end)) currentSlot = 'slot_3';
@@ -221,11 +218,9 @@ app.post("/checkin/:id", async (req, res) => {
         });
       }
 
-      // ... 底下的防重複刷卡、寫入資料庫邏輯完全不需要變動
-
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
-         WHERE user_id = ? AND offering_id = ? AND DATE(created_at) = ? AND slot_type = ?`,
+         WHERE user_id = ? AND offering_id = ? AND LEFT(created_at, 10) = ? AND slot_type = ?`,
         [userId, offeringId, todayStr, currentSlot]
       );
 
@@ -234,7 +229,6 @@ app.post("/checkin/:id", async (req, res) => {
         return res.json({ success: false, message: `此學員的【${slotName}】已完成點名，請勿重複掃描` });
       }
 
-      // 🌟 已將 NOW() 替換為洛杉磯時間
       await db.query(
         `INSERT INTO attendance_records 
          (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
@@ -358,7 +352,12 @@ app.get("/admin/export-excel", async (req, res) => {
   try {
     const filterDate = req.query.date;
     let sql = `SELECT u.name AS '全名', u.phone AS '電話', u.user_type AS '身份', u.lang AS '語言', u.referrer_name AS '介紹人', c.checkin_time AS '簽到時間' FROM checkins c JOIN users u ON c.user_id = u.id`;
-    const [rows] = filterDate ? await db.query(sql + " WHERE DATE(c.checkin_time) = ?", [filterDate]) : await db.query(sql);
+    
+    // 修正細節 2：改用 LEFT(c.checkin_time, 10) 字串比對，徹底排除雲端資料庫的本地時區干擾
+    const [rows] = filterDate 
+      ? await db.query(sql + " WHERE LEFT(c.checkin_time, 10) = ?", [filterDate]) 
+      : await db.query(sql);
+      
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
@@ -387,10 +386,11 @@ app.post("/api/course-checkin", async (req, res) => {
 
     if (!matchedSlot) return res.status(400).json({ success: false, message: "❌ 目前非本課程規定的打卡時間！" });
 
-    const dayDiff = Math.floor((new Date(todayStr) - new Date(c.start_date)) / (1000 * 60 * 60 * 24)) + 1;
+    // 修正細節 1：確保開課日期轉為純字串，並用 Math.round 防止美國 DST 日光節約時間少算一天
+    const startDateStr = c.start_date instanceof Date ? c.start_date.toISOString().slice(0, 10) : c.start_date.slice(0, 10);
+    const dayDiff = Math.round((new Date(todayStr) - new Date(startDateStr)) / (1000 * 60 * 60 * 24)) + 1;
     const dayNumber = dayDiff > 0 ? dayDiff : 1; 
 
-    // 🌟 已將 NOW() 替換為洛杉磯時間
     await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = ?`, [userId, offeringId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]);
     await refreshAttendanceRate(userId, offeringId);
     res.json({ success: true, message: `✅ [${slotLabel}] 成功！` });
@@ -420,7 +420,6 @@ app.post("/admin/toggle-attendance", async (req, res) => {
   const { todayStr, fullDateTimeStr } = getLAFormattedDateTime();
   try {
     if (status === true) {
-      // 🌟 已將 NOW() 替換為洛杉磯時間
       await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = ?`, [userId, offeringId, todayStr, dayNumber, slotType, fullDateTimeStr, fullDateTimeStr]);
     } else {
       await db.query("DELETE FROM attendance_records WHERE user_id = ? AND offering_id = ? AND day_number = ? AND slot_type = ?", [userId, offeringId, dayNumber, slotType]);
@@ -442,7 +441,9 @@ app.post("/admin/evaluate-graduation", async (req, res) => {
     if (rate < 85.00) return res.status(400).json({ success: false, message: `未達畢業標準！目前出勤率為 ${rate}%` });
     if (enrollment[0].certificate_no) return res.json({ success: true, certificate_no: enrollment[0].certificate_no });
 
-    const datePart = new Date().toISOString().slice(0, 7).replace('-', ''); 
+    const { todayStr } = getLAFormattedDateTime(); 
+    const datePart = todayStr.slice(0, 7).replace('-', ''); 
+    
     const randomPart = Math.floor(1000 + Math.random() * 9000); 
     const newCertificateNo = `BODHI-${datePart}-${randomPart}`;
 
