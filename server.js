@@ -444,32 +444,51 @@ app.post("/api/course-checkin", async (req, res) => {
   const { userId, offeringId } = req.body;
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
+  // 🌟 關鍵修正 1：強制將傳入的 ID 轉為整數數字，防止字串型態引發資料庫異常
+  const parsedUserId = parseInt(userId, 10);
+  const parsedOfferingId = parseInt(offeringId || 1, 10);
+
+  // 安全檢查：如果轉換失敗（例如拿到 NaN），直接攔截
+  if (isNaN(parsedUserId)) {
+    return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID 格式" });
+  }
+
   try {
-    const [courseRows] = await db.query(`SELECT start_date, config FROM offerings WHERE id = ?`, [offeringId]);
+    // 使用安全的數字進行查詢
+    const [courseRows] = await db.query(`SELECT start_date, config FROM offerings WHERE id = ?`, [parsedOfferingId]);
     if (courseRows.length === 0) return res.status(444).json({ success: false, message: "找不到該課程期次" });
     
     const c = courseRows[0];
     const config = safeParseJSON(c.config);
     const { slot: matchedSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
 
-    if (!matchedSlot) return res.status(400).json({ success: false, message: "❌ 目前非本課程規定的打卡時間！" });
+    if (!matchedSlot) return res.status(400).json({ success: false, message: `❌ 目前非本課程規定的打卡時間！當前時間：${nowTime.slice(0, 5)}` });
 
     const dayNumber = calculateDayNumber(todayStr, c.start_date);
 
+    // 🌟 關鍵修正 2：帶入確保為數字型的 parsedUserId 與 parsedOfferingId
     await db.query(
       `INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) 
        VALUES (?, ?, ?, ?, ?, ?) 
        ON DUPLICATE KEY UPDATE created_at = ?`, 
-      [userId, offeringId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]
+      [parsedUserId, parsedOfferingId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]
     );
     
-    await refreshAttendanceRate(userId, offeringId);
+    await refreshAttendanceRate(parsedUserId, parsedOfferingId);
     res.json({ success: true, message: `✅ [${slotLabel}] 成功！` });
   } catch (err) {
-    res.status(500).json({ success: false, error: "系統錯誤" });
+    // 🌟 關鍵修正 3：在後端終端機印出最真實的資料庫報錯原因
+    console.error("❌ 資料庫寫入發生真實錯誤:", err);
+    
+    // 如果是因為外鍵約束（找不到這個人或這堂課）
+    if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') {
+      return res.status(500).json({ success: false, message: "❌ 簽到失敗：找不到該學員或課程資料（資料不一致）" });
+    }
+
+    // 將真實錯誤訊息丟回前端，這樣網頁就不會只顯示模糊的異常
+    res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${err.message}` });
   }
 });
-
 app.get("/admin/course-attendance/:offeringId", async (req, res) => {
   const { offeringId } = req.params;
   try {
