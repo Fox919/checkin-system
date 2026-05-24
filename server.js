@@ -214,6 +214,35 @@ app.post("/register", async (req, res) => {
   }
 });
 
+
+// ==========================================
+// 🌟 班級選單 API：提供前端獲取所有班級清單
+// ==========================================
+app.get("/api/offerings", async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT id, title, type, status, config FROM offerings ORDER BY id DESC"
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("❌ 撈取 offerings 失敗:", err);
+    res.status(500).json({ error: "無法取得課程列表資料" });
+  }
+});
+
+// ==========================================
+// 🧘‍♂️ 簽到路由分流 A：修復後的舊網址入口
+// ==========================================
+app.post("/checkin/:id", async (req, res) => {
+  const userId = req.params.id;
+  // ... 以下是你原本的程式碼
+
+
+
+
+
+
+
 // ==========================================
 // 🧘‍♂️ 簽到路由分流 A：修復後的舊網址入口
 // ==========================================
