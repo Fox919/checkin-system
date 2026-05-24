@@ -219,7 +219,9 @@ app.post("/register", async (req, res) => {
 // ==========================================
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
-  const offeringId = req.query.offeringId || req.body.offeringId || 1; 
+  
+  // 🌟 核心修復：使用安全導航運算子 ?. 防止 req.body 為空時引發 undefined 崩潰
+  const offeringId = req.query?.offeringId || req.body?.offeringId || 1; 
   
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
@@ -229,7 +231,6 @@ app.post("/checkin/:id", async (req, res) => {
   if (isNaN(parsedUserId)) {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID" });
   }
-
   try {
     const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [parsedOfferingId]);
     if (!offerings || offerings.length === 0) {
