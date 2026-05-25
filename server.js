@@ -31,7 +31,6 @@ const db = mysql.createPool({
 
 // --- 🛠️ 核心輔助函數區 ---
 
-// 1. 安全解析 JSON 避免崩潰
 function safeParseJSON(jsonStr, fallback = {}) {
   if (!jsonStr) return fallback;
   if (typeof jsonStr === 'object') return jsonStr;
@@ -43,13 +42,11 @@ function safeParseJSON(jsonStr, fallback = {}) {
   }
 }
 
-// 2. 檢查目前時間是否在指定的「開始」與「結束」時間內
 function isTimeBetween(nowTimeStr, startTimeStr, endTimeStr) {
   if (!startTimeStr || !endTimeStr) return false;
   return nowTimeStr >= startTimeStr && nowTimeStr <= endTimeStr;
 }
 
-// 3. 獲取當前洛杉磯精準時間物件
 function getLAFormattedDateTime() {
   const d = new Date();
   const dateStr = d.toLocaleDateString('sv-SE', { timeZone: 'America/Los_Angeles' });
@@ -61,7 +58,6 @@ function getLAFormattedDateTime() {
   };
 }
 
-// 4. 統一匹配課程簽到時段
 function matchCourseSlot(nowTime, config) {
   if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) return { slot: 'slot_1', label: '第一節簽到' };
   if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) return { slot: 'slot_2', label: '第二節簽到' };
@@ -69,7 +65,6 @@ function matchCourseSlot(nowTime, config) {
   return { slot: null, label: '' };
 }
 
-// 5. 核心計算函數：自動刷新學員的出勤率
 async function refreshAttendanceRate(userId, offeringId) {
   const [course] = await db.query("SELECT total_checkins_required FROM offerings WHERE id = ?", [offeringId]);
   const totalRequired = course[0]?.total_checkins_required || 24;
@@ -89,7 +84,6 @@ async function refreshAttendanceRate(userId, offeringId) {
   );
 }
 
-// 暫時性路由：生成所有學員的姓名與 QR Code Base64 圖片資料
 app.get("/admin/temporary-badges", async (req, res) => {
   try {
     const sql = `SELECT id, name, phone, qr_code FROM users WHERE user_type = 'Student' ORDER BY name ASC`;
@@ -151,17 +145,82 @@ app.post("/check-duplicate", async (req, res) => {
 });
 
 // ==========================================
-// 🌟 補上管理控制台缺失的人員清單 API，防止 404 錯誤
+// 🌟 關鍵修正：補齊後台管理所需的「所有缺失欄位」
 // ==========================================
 app.get("/admin/users", async (req, res) => {
   try {
-    const [rows] = await db.query(
-      "SELECT id, last_name, first_name, name, phone, email, gender, user_type, notes, status, qr_code FROM users ORDER BY id DESC"
-    );
+    // 💡 這裡將資料庫內隱藏的關鍵欄位全部 Select 出來，並使用子查詢撈出該成員最後一次的點名時間
+    const sql = `
+      SELECT 
+        id, last_name, first_name, name, phone, email, gender, user_type, notes, status, qr_code,
+        lang, discovery_source, referrer_name, is_blessed, receptionist_name, created_at,
+        (SELECT MAX(created_at) FROM attendance_records WHERE attendance_records.user_id = users.id) AS last_checkin_time
+      FROM users 
+      ORDER BY id DESC
+    `;
+    const [rows] = await db.query(sql);
     res.json(rows);
   } catch (err) {
     console.error("❌ 控制台撈取人員清單失敗:", err);
     res.status(500).json({ error: "無法取得人員清單資料" });
+  }
+});
+
+// ==========================================
+// 🌟 新增：更新接待人員姓名 API (對應前端的 handleReceptionistChange)
+// ==========================================
+app.post("/admin/update-receptionist", async (req, res) => {
+  const { userId, receptionistName } = req.body;
+  try {
+    await db.query(
+      "UPDATE users SET receptionist_name = ? WHERE id = ?",
+      [receptionistName, userId]
+    );
+    res.json({ success: true, message: "接待人員更新成功" });
+  } catch (err) {
+    console.error("❌ 更新接待人員失敗:", err);
+    res.status(500).json({ error: "更新接待人員失敗" });
+  }
+});
+
+// ==========================================
+// 🌟 新增：更新備註 API (對應前端的 handleNoteChange)
+// ==========================================
+app.post("/admin/update-note", async (req, res) => {
+  const { userId, notes } = req.body;
+  try {
+    await db.query(
+      "UPDATE users SET notes = ? WHERE id = ?",
+      [notes, userId]
+    );
+    res.json({ success: true, message: "備註更新成功" });
+  } catch (err) {
+    console.error("❌ 更新備註失敗:", err);
+    res.status(500).json({ error: "更新備註失敗" });
+  }
+});
+
+// ==========================================
+// 🌟 新增：動態轉換身分與課程綁定 API (對應前端的 handleUpdateUserType)
+// ==========================================
+app.post("/admin/update-type/:id", async (req, res) => {
+  const userId = req.params.id;
+  const { new_type, offeringId } = req.body;
+  try {
+    // 1. 更新身分標籤
+    await db.query("UPDATE users SET user_type = ? WHERE id = ?", [new_type, userId]);
+    
+    // 2. 如果轉換為學員且有指定課程，則順便塞入課程綁定表
+    if ((new_type === 'Student' || new_type === '學員') && offeringId) {
+      await db.query(
+        "INSERT INTO course_enrollments (user_id, offering_id, attendance_rate) VALUES (?, ?, 0.00) ON DUPLICATE KEY UPDATE offering_id = offering_id",
+        [userId, offeringId]
+      );
+    }
+    res.json({ success: true, message: "成員身分與班級更新成功！" });
+  } catch (err) {
+    console.error("❌ 轉換身分失敗:", err);
+    res.status(500).json({ error: "轉換身分失敗" });
   }
 });
 
@@ -217,7 +276,7 @@ app.post("/register", async (req, res) => {
     
     const userId = result.insertId;
     if (autoCheckin) {
-      await db.query("INSERT INTO checkins (user_id, checkin_time, checkin_date) VALUES (?, ?, ?)", [userId, fullDateTimeStr, todayStr]);
+      await db.query("INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, 1, ?, 0, 'regular', ?)", [userId, todayStr, fullDateTimeStr]);
     }
     res.json({ success: true, id: userId, name: fullName });
   } catch (err) {
@@ -229,9 +288,6 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🌟 班級選單 API：加強萬用相容版，防止控制台顯示空白
-// ==========================================
 app.get("/api/offerings", async (req, res) => {
   try {
     const [rows] = await db.query(
@@ -244,9 +300,6 @@ app.get("/api/offerings", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🧘‍♂️ 簽到路由分流 A：修復後的舊網址入口
-// ==========================================
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   const offeringId = req.query?.offeringId || req.body?.offeringId || 1; 
@@ -342,9 +395,6 @@ app.post("/checkin/:id", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口（萬無一失防禦版）
-// ==========================================
 app.post("/api/course-checkin", async (req, res) => {
   let bodyData = req.body;
   if (typeof bodyData === 'string') {
@@ -354,7 +404,6 @@ app.post("/api/course-checkin", async (req, res) => {
   const incomingUserId = bodyData?.userId || bodyData?.user_id || bodyData?.userid;
   const incomingOfferingId = bodyData?.offeringId || bodyData?.offering_id || bodyData?.offeringid || 1;
 
-  // 🌟 修正點 1：將遺漏的洛杉磯時間物件獲取補回來，確保變數可用
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
   const parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
@@ -444,7 +493,7 @@ app.post("/api/course-checkin", async (req, res) => {
     res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！` });
 
   } catch (err) {
-    console.error("❌ 後端新簽到路由出錯:", err);
+    console.error("❌ 攻端新簽到路由出錯:", err);
     res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${err.message}` });
   }
 });
