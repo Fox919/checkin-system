@@ -145,11 +145,10 @@ app.post("/check-duplicate", async (req, res) => {
 });
 
 // ==========================================
-// 🌟 關鍵修正：補齊後台管理所需的「所有缺失欄位」
+// 🌟 管理控制台人員清單 API (包含所有隱藏欄位與最後簽到時間)
 // ==========================================
 app.get("/admin/users", async (req, res) => {
   try {
-    // 💡 這裡將資料庫內隱藏的關鍵欄位全部 Select 出來，並使用子查詢撈出該成員最後一次的點名時間
     const sql = `
       SELECT 
         id, last_name, first_name, name, phone, email, gender, user_type, notes, status, qr_code,
@@ -167,7 +166,7 @@ app.get("/admin/users", async (req, res) => {
 });
 
 // ==========================================
-// 🌟 新增：更新接待人員姓名 API (對應前端的 handleReceptionistChange)
+// 🌟 更新接待人員姓名 API
 // ==========================================
 app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
@@ -184,7 +183,7 @@ app.post("/admin/update-receptionist", async (req, res) => {
 });
 
 // ==========================================
-// 🌟 新增：更新備註 API (對應前端的 handleNoteChange)
+// 🌟 更新備註 API
 // ==========================================
 app.post("/admin/update-note", async (req, res) => {
   const { userId, notes } = req.body;
@@ -201,16 +200,14 @@ app.post("/admin/update-note", async (req, res) => {
 });
 
 // ==========================================
-// 🌟 新增：動態轉換身分與課程綁定 API (對應前端的 handleUpdateUserType)
+// 🌟 動態轉換身分與課程綁定 API
 // ==========================================
 app.post("/admin/update-type/:id", async (req, res) => {
   const userId = req.params.id;
   const { new_type, offeringId } = req.body;
   try {
-    // 1. 更新身分標籤
     await db.query("UPDATE users SET user_type = ? WHERE id = ?", [new_type, userId]);
     
-    // 2. 如果轉換為學員且有指定課程，則順便塞入課程綁定表
     if ((new_type === 'Student' || new_type === '學員') && offeringId) {
       await db.query(
         "INSERT INTO course_enrollments (user_id, offering_id, attendance_rate) VALUES (?, ?, 0.00) ON DUPLICATE KEY UPDATE offering_id = offering_id",
@@ -231,7 +228,7 @@ app.post("/register", async (req, res) => {
     referrer_name,       
     other_source_text,   
     is_blessed, 
-    user_type, autoCheckin, notes
+    user_type, autoCheckin, notes, offeringId
   } = req.body;
 
   const fullName = `${lastName || ''}${firstName || ''}`.trim();
@@ -243,6 +240,7 @@ app.post("/register", async (req, res) => {
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
   const { todayStr, fullDateTimeStr } = getLAFormattedDateTime();
+  const targetOfferingId = offeringId || 1; 
 
   try {
     const sql = `
@@ -276,7 +274,7 @@ app.post("/register", async (req, res) => {
     
     const userId = result.insertId;
     if (autoCheckin) {
-      await db.query("INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, 1, ?, 0, 'regular', ?)", [userId, todayStr, fullDateTimeStr]);
+      await db.query("INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, 'regular', ?)", [userId, targetOfferingId, todayStr, fullDateTimeStr]);
     }
     res.json({ success: true, id: userId, name: fullName });
   } catch (err) {
@@ -395,27 +393,58 @@ app.post("/checkin/:id", async (req, res) => {
   }
 });
 
+// ==========================================
+// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口（智慧防錯黃金修正版）
+// ==========================================
 app.post("/api/course-checkin", async (req, res) => {
   let bodyData = req.body;
-  if (typeof bodyData === 'string') {
-    try { bodyData = JSON.parse(bodyData); } catch(e){}
+  
+  // 🌟 智慧修正 1：全面清洗與解開可能被包裝成鍵值對的歪斜 JSON 結構
+  if (bodyData && typeof bodyData === 'object') {
+    const keys = Object.keys(bodyData);
+    // 如果物件只有一個 Key，而且那個 Key 內部包含了 userId 字眼，代表整段 JSON 字串被當成 Key 塞進來了
+    if (keys.length === 1 && keys[0].trim().startsWith('{') && keys[0].includes('userId')) {
+      try {
+        bodyData = JSON.parse(keys[0]);
+      } catch (e) {
+        console.error("⚠️ 嘗試強制解開殘缺的二維碼 Key 失敗:", e.message);
+      }
+    }
   }
 
-  const incomingUserId = bodyData?.userId || bodyData?.user_id || bodyData?.userid;
-  const incomingOfferingId = bodyData?.offeringId || bodyData?.offering_id || bodyData?.offeringid || 1;
+  // 🌟 智慧修正 2：如果接收到的是字串型態，將其轉為物件
+  if (typeof bodyData === 'string') {
+    try { 
+      bodyData = JSON.parse(bodyData.trim()); 
+    } catch(e) {
+      bodyData = { userId: bodyData };
+    }
+  }
+
+  // 提取變數
+  let incomingUserId = bodyData?.userId || bodyData?.user_id || bodyData?.userid;
+  let incomingOfferingId = bodyData?.offeringId || bodyData?.offering_id || bodyData?.offeringid;
+
+  if (!incomingOfferingId) incomingOfferingId = 1;
+
+  // 安全轉化為數字型態
+  let parsedUserId = parseInt(incomingUserId, 10);
+  let parsedOfferingId = parseInt(incomingOfferingId, 10);
+
+  // 防呆：如果是帶有字母的舊款二維碼（例如 "QR_39"），再啟動正則過濾
+  if (isNaN(parsedUserId) && incomingUserId) {
+    parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
+  }
+  if (isNaN(parsedOfferingId) && incomingOfferingId) {
+    parsedOfferingId = parseInt(String(incomingOfferingId).replace(/\D/g, ""), 10);
+  }
 
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
-  const parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
-  const parsedOfferingId = parseInt(String(incomingOfferingId).replace(/\D/g, ""), 10);
-
-  console.log(`👉 收到簽到請求 - 解析後的學員ID: ${parsedUserId}, 班級ID: ${parsedOfferingId}`);
+  console.log(`👉 [智慧解析成功] 學員ID: ${parsedUserId}, 班級ID: ${parsedOfferingId}`);
 
   if (!parsedUserId || isNaN(parsedUserId)) {
-    return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID 格式" });
-  }
-  if (!parsedOfferingId || isNaN(parsedOfferingId)) {
-    return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的課程 ID 格式" });
+    return res.status(400).json({ success: false, message: "❌ 簽到失敗：無法從二維碼解析出任何有效的學員 ID" });
   }
 
   try {
@@ -424,7 +453,7 @@ app.post("/api/course-checkin", async (req, res) => {
     if (!courseRows || courseRows.length === 0) {
       return res.status(444).json({ 
         success: false, 
-        message: `❌ 簽到失敗：找不到課程期次 (收到 ID: ${parsedOfferingId})` 
+        message: `❌ 簽到失敗：找不到該課程期次 (解析出 ID: ${parsedOfferingId})` 
       });
     }
     
@@ -432,7 +461,7 @@ app.post("/api/course-checkin", async (req, res) => {
 
     const [userRows] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [parsedUserId]);
     if (!userRows || userRows.length === 0) {
-      return res.status(444).json({ success: false, message: "❌ 簽到失敗：找不到此成員資料" });
+      return res.status(444).json({ success: false, message: `❌ 簽到失敗：找不到此成員資料 (解析出的學員 ID: ${parsedUserId})` });
     }
     const currentUser = userRows[0];
     const studentName = currentUser.name || "未知成員";
@@ -493,7 +522,7 @@ app.post("/api/course-checkin", async (req, res) => {
     res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！` });
 
   } catch (err) {
-    console.error("❌ 攻端新簽到路由出錯:", err);
+    console.error("❌ 後端新簽到路由出錯:", err);
     res.status(500).json({ success: false, message: `伺服器資料庫發生異常: ${err.message}` });
   }
 });
