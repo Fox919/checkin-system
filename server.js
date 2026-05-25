@@ -150,6 +150,26 @@ app.post("/check-duplicate", async (req, res) => {
   }
 });
 
+// ==========================================
+// 🌟 補上管理控制台缺失的人員清單 API，防止 404 錯誤
+// ==========================================
+app.get("/admin/users", async (req, res) => {
+  try {
+    // 撈出所有成員的完整欄位資料（包含 ID、姓名、電話、身份、備註、狀態等）
+    const [rows] = await db.query(
+      "SELECT id, last_name, first_name, name, phone, email, gender, user_type, notes, status, qr_code FROM users ORDER BY id DESC"
+    );
+    
+    // 回傳 JSON 給前端控制台
+    res.json(rows);
+  } catch (err) {
+    console.error("❌ 控制台撈取人員清單失敗:", err);
+    res.status(500).json({ error: "無法取得人員清單資料" });
+  }
+});
+
+
+
 app.post("/register", async (req, res) => {
   const { 
     lastName, firstName, gender, phone, email, 
@@ -447,7 +467,8 @@ app.post("/api/course-checkin", async (req, res) => {
 app.get("/admin/course-attendance/:offeringId", async (req, res) => {
   const { offeringId } = req.params;
   try {
-    const sqlEnrollments = `SELECT u.id AS user_id, u.name, ce.attendance_rate, ce.certificate_no FROM course_enrollments ce JOIN users u ON ce.user_id = u.id WHERE ce.offering_id = ? ORDER BY u.name ASC`;
+    // 🌟 建議修正後（多撈取 phone, user_type, status，確保前端表格不留白）
+const sqlEnrollments = `SELECT u.id AS user_id, u.name, u.phone, u.user_type, u.status, ce.attendance_rate, ce.certificate_no FROM course_enrollments ce JOIN users u ON ce.user_id = u.id WHERE ce.offering_id = ? ORDER BY u.name ASC`;
     const [students] = await db.query(sqlEnrollments, [offeringId]);
     const [records] = await db.query("SELECT user_id, day_number, slot_type FROM attendance_records WHERE offering_id = ?", [offeringId]);
     const formattedData = students.map(student => {
