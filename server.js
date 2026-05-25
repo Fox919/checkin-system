@@ -155,20 +155,15 @@ app.post("/check-duplicate", async (req, res) => {
 // ==========================================
 app.get("/admin/users", async (req, res) => {
   try {
-    // 撈出所有成員的完整欄位資料（包含 ID、姓名、電話、身份、備註、狀態等）
     const [rows] = await db.query(
       "SELECT id, last_name, first_name, name, phone, email, gender, user_type, notes, status, qr_code FROM users ORDER BY id DESC"
     );
-    
-    // 回傳 JSON 給前端控制台
     res.json(rows);
   } catch (err) {
     console.error("❌ 控制台撈取人員清單失敗:", err);
     res.status(500).json({ error: "無法取得人員清單資料" });
   }
 });
-
-
 
 app.post("/register", async (req, res) => {
   const { 
@@ -234,18 +229,14 @@ app.post("/register", async (req, res) => {
   }
 });
 
-
 // ==========================================
 // 🌟 班級選單 API：加強萬用相容版，防止控制台顯示空白
 // ==========================================
 app.get("/api/offerings", async (req, res) => {
   try {
-    // 透過 AS name 讓 title 同時以 name 的身份輸出，完美相容前後端欄位
-    // 同時把資料表裡所有的欄位都撈出來，確保控制台不會漏掉任何資訊
     const [rows] = await db.query(
       `SELECT *, title AS name FROM offerings ORDER BY id DESC`
     );
-    
     res.json(rows);
   } catch (err) {
     console.error("❌ 撈取 offerings 失敗:", err);
@@ -253,20 +244,11 @@ app.get("/api/offerings", async (req, res) => {
   }
 });
 
-
-
-
-
-
-
-
 // ==========================================
 // 🧘‍♂️ 簽到路由分流 A：修復後的舊網址入口
 // ==========================================
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
-  
-  // 🌟 核心修復：使用安全導航運算子 ?. 防止 req.body 為空時引發 undefined 崩潰
   const offeringId = req.query?.offeringId || req.body?.offeringId || 1; 
   
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
@@ -292,7 +274,6 @@ app.post("/checkin/:id", async (req, res) => {
     const studentName = currentUser.name || "隨喜訪客";
     const userType = currentUser.user_type || "Visitor";
 
-    // 🌸 分流 A-1：一般服務 或 非學員身份
     if (currentOffering.type === 'service' || userType !== 'Student') {
       const [existing] = await db.query(
         'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
@@ -316,7 +297,6 @@ app.post("/checkin/:id", async (req, res) => {
       });
     }
 
-    // 🌸 分流 A-2：密集班課程 且 是 學員
     if (currentOffering.type === 'course' && userType === 'Student') {
       const config = safeParseJSON(currentOffering.config);
       const { slot: currentSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
@@ -328,7 +308,6 @@ app.post("/checkin/:id", async (req, res) => {
         });
       }
 
-      // 🌟 方案 A 核心變更：不再呼叫 calculateDayNumber，改採日期中的「日」數字
       const dayNumber = parseInt(todayStr.split('-')[2], 10) || 1;
 
       const [slotExisting] = await db.query(
@@ -364,21 +343,29 @@ app.post("/checkin/:id", async (req, res) => {
 });
 
 // ==========================================
-// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口
+// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口（萬無一失防禦版）
 // ==========================================
 app.post("/api/course-checkin", async (req, res) => {
-  const incomingUserId = req.body.userId || req.body.user_id || req.body.userid;
-  const incomingOfferingId = req.body.offeringId || req.body.offering_id || req.body.offeringid || 1;
+  let bodyData = req.body;
+  if (typeof bodyData === 'string') {
+    try { bodyData = JSON.parse(bodyData); } catch(e){}
+  }
 
+  const incomingUserId = bodyData?.userId || bodyData?.user_id || bodyData?.userid;
+  const incomingOfferingId = bodyData?.offeringId || bodyData?.offering_id || bodyData?.offeringid || 1;
+
+  // 🌟 修正點 1：將遺漏的洛杉磯時間物件獲取補回來，確保變數可用
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
-  const parsedUserId = parseInt(incomingUserId, 10);
-  const parsedOfferingId = parseInt(incomingOfferingId, 10);
+  const parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
+  const parsedOfferingId = parseInt(String(incomingOfferingId).replace(/\D/g, ""), 10);
 
-  if (isNaN(parsedUserId)) {
+  console.log(`👉 收到簽到請求 - 解析後的學員ID: ${parsedUserId}, 班級ID: ${parsedOfferingId}`);
+
+  if (!parsedUserId || isNaN(parsedUserId)) {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID 格式" });
   }
-  if (isNaN(parsedOfferingId)) {
+  if (!parsedOfferingId || isNaN(parsedOfferingId)) {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的課程 ID 格式" });
   }
 
@@ -434,7 +421,6 @@ app.post("/api/course-checkin", async (req, res) => {
       });
     }
 
-    // 🌟 方案 A 核心變更：不再呼叫 calculateDayNumber，改採日期中的「日」數字
     const dayNumber = parseInt(todayStr.split('-')[2], 10) || 1;
 
     const [slotExisting] = await db.query(
@@ -463,12 +449,10 @@ app.post("/api/course-checkin", async (req, res) => {
   }
 });
 
-
 app.get("/admin/course-attendance/:offeringId", async (req, res) => {
   const { offeringId } = req.params;
   try {
-    // 🌟 建議修正後（多撈取 phone, user_type, status，確保前端表格不留白）
-const sqlEnrollments = `SELECT u.id AS user_id, u.name, u.phone, u.user_type, u.status, ce.attendance_rate, ce.certificate_no FROM course_enrollments ce JOIN users u ON ce.user_id = u.id WHERE ce.offering_id = ? ORDER BY u.name ASC`;
+    const sqlEnrollments = `SELECT u.id AS user_id, u.name, u.phone, u.user_type, u.status, ce.attendance_rate, ce.certificate_no FROM course_enrollments ce JOIN users u ON ce.user_id = u.id WHERE ce.offering_id = ? ORDER BY u.name ASC`;
     const [students] = await db.query(sqlEnrollments, [offeringId]);
     const [records] = await db.query("SELECT user_id, day_number, slot_type FROM attendance_records WHERE offering_id = ?", [offeringId]);
     const formattedData = students.map(student => {
