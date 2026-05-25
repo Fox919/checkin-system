@@ -216,20 +216,22 @@ app.post("/register", async (req, res) => {
 
 
 // ==========================================
-// 🌟 班級選單 API：提供前端獲取所有班級清單
+// 🌟 班級選單 API：加強萬用相容版，防止控制台顯示空白
 // ==========================================
 app.get("/api/offerings", async (req, res) => {
   try {
+    // 透過 AS name 讓 title 同時以 name 的身份輸出，完美相容前後端欄位
+    // 同時把資料表裡所有的欄位都撈出來，確保控制台不會漏掉任何資訊
     const [rows] = await db.query(
-      "SELECT id, title, type, status, config FROM offerings ORDER BY id DESC"
+      `SELECT *, title AS name FROM offerings ORDER BY id DESC`
     );
+    
     res.json(rows);
   } catch (err) {
     console.error("❌ 撈取 offerings 失敗:", err);
     res.status(500).json({ error: "無法取得課程列表資料" });
   }
 });
-
 
 
 
