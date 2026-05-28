@@ -84,6 +84,25 @@ async function refreshAttendanceRate(userId, offeringId) {
   );
 }
 
+// 🌟 新增：智慧天數計算器，防止拿當天日期當作 Day Number
+function calculateDayNumber(todayStr, courseStartDateStr) {
+  if (!courseStartDateStr) return 1;
+  try {
+    const start = new Date(courseStartDateStr);
+    const today = new Date(todayStr);
+    
+    // 計算天數差 (毫秒轉天數)
+    const diffTime = today.getTime() - start.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    // 第一天差 0 天，所以 +1 變成 Day 1
+    return diffDays >= 0 ? diffDays + 1 : 1;
+  } catch (e) {
+    console.error("❌ 計算天數失敗，降級為 Day 1:", e.message);
+    return 1;
+  }
+}
+
 app.get("/admin/temporary-badges", async (req, res) => {
   try {
     const sql = `SELECT id, name, phone, qr_code FROM users WHERE user_type = 'Student' ORDER BY name ASC`;
@@ -144,9 +163,6 @@ app.post("/check-duplicate", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🌟 管理控制台人員清單 API (包含所有隱藏欄位與最後簽到時間)
-// ==========================================
 app.get("/admin/users", async (req, res) => {
   try {
     const sql = `
@@ -165,9 +181,6 @@ app.get("/admin/users", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🌟 更新接待人員姓名 API
-// ==========================================
 app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
   try {
@@ -182,9 +195,6 @@ app.post("/admin/update-receptionist", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🌟 更新備註 API
-// ==========================================
 app.post("/admin/update-note", async (req, res) => {
   const { userId, notes } = req.body;
   try {
@@ -199,9 +209,6 @@ app.post("/admin/update-note", async (req, res) => {
   }
 });
 
-// ==========================================
-// 🌟 動態轉換身分與課程綁定 API
-// ==========================================
 app.post("/admin/update-type/:id", async (req, res) => {
   const userId = req.params.id;
   const { new_type, offeringId } = req.body;
@@ -298,6 +305,9 @@ app.get("/api/offerings", async (req, res) => {
   }
 });
 
+// ==========================================
+// 🧘‍♂️ 舊簽到路由 (同步套用智慧天數計算修復)
+// ==========================================
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   const offeringId = req.query?.offeringId || req.body?.offeringId || 1; 
@@ -359,7 +369,8 @@ app.post("/checkin/:id", async (req, res) => {
         });
       }
 
-      const dayNumber = parseInt(todayStr.split('-')[2], 10) || 1;
+      // 🌟 核心修復：使用開班起始時間，智慧精算今天是 Day 幾！
+      const dayNumber = calculateDayNumber(todayStr, currentOffering.course_start_date);
 
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
@@ -394,15 +405,13 @@ app.post("/checkin/:id", async (req, res) => {
 });
 
 // ==========================================
-// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口（智慧防錯黃金修正版）
+// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口 (🎯 最終完美對齊修復版)
 // ==========================================
 app.post("/api/course-checkin", async (req, res) => {
   let bodyData = req.body;
   
-  // 🌟 智慧修正 1：全面清洗與解開可能被包裝成鍵值對的歪斜 JSON 結構
   if (bodyData && typeof bodyData === 'object') {
     const keys = Object.keys(bodyData);
-    // 如果物件只有一個 Key，而且那個 Key 內部包含了 userId 字眼，代表整段 JSON 字串被當成 Key 塞進來了
     if (keys.length === 1 && keys[0].trim().startsWith('{') && keys[0].includes('userId')) {
       try {
         bodyData = JSON.parse(keys[0]);
@@ -412,7 +421,6 @@ app.post("/api/course-checkin", async (req, res) => {
     }
   }
 
-  // 🌟 智慧修正 2：如果接收到的是字串型態，將其轉為物件
   if (typeof bodyData === 'string') {
     try { 
       bodyData = JSON.parse(bodyData.trim()); 
@@ -421,17 +429,14 @@ app.post("/api/course-checkin", async (req, res) => {
     }
   }
 
-  // 提取變數
   let incomingUserId = bodyData?.userId || bodyData?.user_id || bodyData?.userid;
   let incomingOfferingId = bodyData?.offeringId || bodyData?.offering_id || bodyData?.offeringid;
 
   if (!incomingOfferingId) incomingOfferingId = 1;
 
-  // 安全轉化為數字型態
   let parsedUserId = parseInt(incomingUserId, 10);
   let parsedOfferingId = parseInt(incomingOfferingId, 10);
 
-  // 防呆：如果是帶有字母的舊款二維碼（例如 "QR_39"），再啟動正則過濾
   if (isNaN(parsedUserId) && incomingUserId) {
     parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
   }
@@ -448,7 +453,7 @@ app.post("/api/course-checkin", async (req, res) => {
   }
 
   try {
-    const [courseRows] = await db.query(`SELECT config, type FROM offerings WHERE id = ?`, [parsedOfferingId]);
+    const [courseRows] = await db.query(`SELECT config, type, course_start_date FROM offerings WHERE id = ?`, [parsedOfferingId]);
     
     if (!courseRows || courseRows.length === 0) {
       return res.status(444).json({ 
@@ -499,7 +504,8 @@ app.post("/api/course-checkin", async (req, res) => {
       });
     }
 
-    const dayNumber = parseInt(todayStr.split('-')[2], 10) || 1;
+    // 🌟 核心最大修復：使用全新設計的日數計算器，自動比對 course_start_date 計算正確的 Day Number
+    const dayNumber = calculateDayNumber(todayStr, c.course_start_date);
 
     const [slotExisting] = await db.query(
       `SELECT id FROM attendance_records 
@@ -519,7 +525,7 @@ app.post("/api/course-checkin", async (req, res) => {
     );
     
     await refreshAttendanceRate(parsedUserId, parsedOfferingId);
-    res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！` });
+    res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！(Day ${dayNumber})` });
 
   } catch (err) {
     console.error("❌ 後端新簽到路由出錯:", err);
