@@ -99,6 +99,50 @@ function calculateDayNumber(todayStr, courseStartDateStr) {
   }
 }
 
+async function getManualAttendanceDate(offeringId, dayNumber, fallbackDate) {
+  const [offerings] = await db.query("SELECT config FROM offerings WHERE id = ?", [offeringId]);
+  const config = safeParseJSON(offerings[0]?.config);
+  const sessionDate = config.sessions?.[dayNumber - 1]?.date;
+  return sessionDate || fallbackDate;
+}
+
+async function ensureAttendanceRecordsIndexes() {
+  try {
+    const [uniqueIndexes] = await db.query(`
+      SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns_list
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'attendance_records'
+        AND NON_UNIQUE = 0
+      GROUP BY INDEX_NAME
+    `);
+
+    for (const index of uniqueIndexes) {
+      if (
+        index.INDEX_NAME !== 'PRIMARY' &&
+        index.columns_list === 'user_id,offering_id,checkin_date'
+      ) {
+        await db.query(`ALTER TABLE attendance_records DROP INDEX \`${index.INDEX_NAME}\``);
+        console.log(`✅ 已移除舊考勤唯一鍵: ${index.INDEX_NAME}`);
+      }
+    }
+
+    const hasSlotIndex = uniqueIndexes.some(
+      index => index.columns_list === 'user_id,offering_id,checkin_date,slot_type'
+    );
+
+    if (!hasSlotIndex) {
+      await db.query(`
+        CREATE UNIQUE INDEX uq_attendance_user_offering_date_slot
+        ON attendance_records (user_id, offering_id, checkin_date, slot_type)
+      `);
+      console.log("✅ 已建立 Slot 級考勤唯一鍵");
+    }
+  } catch (err) {
+    console.warn("⚠️ 考勤索引自動升級未完成，請檢查資料庫權限或既有重複資料:", err.message);
+  }
+}
+
 app.get("/admin/temporary-badges", async (req, res) => {
   try {
     const sql = `SELECT id, name, phone, qr_code FROM users WHERE user_type = 'Student' ORDER BY name ASC`;
@@ -542,16 +586,39 @@ app.get("/admin/course-attendance/:offeringId", async (req, res) => {
 app.post("/admin/toggle-attendance", async (req, res) => {
   const { userId, offeringId, dayNumber, slotType, status } = req.body;
   const { todayStr, fullDateTimeStr } = getLAFormattedDateTime();
+  const parsedUserId = parseInt(userId, 10);
+  const parsedOfferingId = parseInt(offeringId, 10);
+  const parsedDayNumber = parseInt(dayNumber, 10);
+
+  if (!parsedUserId || !parsedOfferingId || !parsedDayNumber || !slotType) {
+    return res.status(400).json({ success: false, error: "缺少有效的考勤修改參數" });
+  }
+
   try {
+    const checkinDate = await getManualAttendanceDate(parsedOfferingId, parsedDayNumber, todayStr);
+
     if (status === true) {
-      await db.query(`INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE created_at = ?`, [userId, offeringId, todayStr, dayNumber, slotType, fullDateTimeStr, fullDateTimeStr]);
+      await db.query(
+        `INSERT INTO attendance_records
+         (user_id, offering_id, checkin_date, day_number, slot_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           day_number = VALUES(day_number),
+           slot_type = VALUES(slot_type),
+           created_at = VALUES(created_at)`,
+        [parsedUserId, parsedOfferingId, checkinDate, parsedDayNumber, slotType, fullDateTimeStr]
+      );
     } else {
-      await db.query("DELETE FROM attendance_records WHERE user_id = ? AND offering_id = ? AND day_number = ? AND slot_type = ?", [userId, offeringId, dayNumber, slotType]);
+      await db.query(
+        "DELETE FROM attendance_records WHERE user_id = ? AND offering_id = ? AND day_number = ? AND slot_type = ?",
+        [parsedUserId, parsedOfferingId, parsedDayNumber, slotType]
+      );
     }
-    await refreshAttendanceRate(userId, offeringId);
+    await refreshAttendanceRate(parsedUserId, parsedOfferingId);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("❌ 管理員修改考勤失敗:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -577,6 +644,8 @@ app.post("/admin/evaluate-graduation", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+ensureAttendanceRecordsIndexes();
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`✅ 伺服器已啟動: ${PORT}`));
