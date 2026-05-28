@@ -204,16 +204,38 @@ app.post("/check-duplicate", async (req, res) => {
 });
 
 app.get("/admin/users", async (req, res) => {
+  const { todayStr } = getLAFormattedDateTime();
   try {
     const sql = `
       SELECT 
-        id, last_name, first_name, name, phone, email, gender, user_type, notes, status, qr_code,
+        id, last_name, first_name, name, phone, email, gender, user_type, notes, qr_code,
         lang, discovery_source, referrer_name, is_blessed, receptionist_name, created_at,
-        (SELECT MAX(created_at) FROM attendance_records WHERE attendance_records.user_id = users.id) AS last_checkin_time
+        users.status AS raw_status,
+        CASE
+          WHEN EXISTS (
+            SELECT 1 FROM attendance_records ar_today
+            WHERE ar_today.user_id = users.id AND ar_today.checkin_date = ?
+          ) THEN 'checked-in'
+          ELSE users.status
+        END AS status,
+        (
+          SELECT ar_latest.checkin_date
+          FROM attendance_records ar_latest
+          WHERE ar_latest.user_id = users.id
+          ORDER BY ar_latest.checkin_date DESC, ar_latest.created_at DESC, ar_latest.id DESC
+          LIMIT 1
+        ) AS last_checkin_date,
+        (
+          SELECT COALESCE(ar_latest.created_at, CONCAT(ar_latest.checkin_date, ' 00:00:00'))
+          FROM attendance_records ar_latest
+          WHERE ar_latest.user_id = users.id
+          ORDER BY ar_latest.checkin_date DESC, ar_latest.created_at DESC, ar_latest.id DESC
+          LIMIT 1
+        ) AS last_checkin_time
       FROM users 
       ORDER BY id DESC
     `;
-    const [rows] = await db.query(sql);
+    const [rows] = await db.query(sql, [todayStr]);
     res.json(rows);
   } catch (err) {
     console.error("❌ 控制台撈取人員清單失敗:", err);
@@ -389,6 +411,7 @@ app.post("/checkin/:id", async (req, res) => {
         'INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, "regular", ?)',
         [parsedUserId, parsedOfferingId, todayStr, fullDateTimeStr]
       );
+      await db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [parsedUserId]);
       
       const roleLabel = userType === 'Volunteer' ? '義工' : userType === 'Venerable' ? '法師' : '訪客';
       return res.json({ 
@@ -439,6 +462,7 @@ app.post("/checkin/:id", async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?)`,
         [parsedUserId, parsedOfferingId, todayStr, dayNumber, currentSlot, fullDateTimeStr]
       );
+      await db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [parsedUserId]);
 
       await refreshAttendanceRate(parsedUserId, parsedOfferingId);
 
@@ -517,6 +541,7 @@ app.post("/api/course-checkin", async (req, res) => {
         'INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, "regular", ?)',
         [parsedUserId, parsedOfferingId, todayStr, fullDateTimeStr]
       );
+      await db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [parsedUserId]);
       const roleLabel = userType === 'Volunteer' ? '義工' : userType === 'Venerable' ? '法師' : '訪客';
       return res.json({ success: true, message: `✅ 【${studentName}】${roleLabel}簽到成功！` });
     }
@@ -557,6 +582,7 @@ app.post("/api/course-checkin", async (req, res) => {
        ON DUPLICATE KEY UPDATE created_at = ?`, 
       [parsedUserId, parsedOfferingId, todayStr, dayNumber, matchedSlot, fullDateTimeStr, fullDateTimeStr]
     );
+    await db.query("UPDATE users SET status = 'checked-in' WHERE id = ?", [parsedUserId]);
     
     await refreshAttendanceRate(parsedUserId, parsedOfferingId);
     res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！(已對齊至 Day ${dayNumber})` });
