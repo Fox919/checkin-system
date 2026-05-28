@@ -84,18 +84,14 @@ async function refreshAttendanceRate(userId, offeringId) {
   );
 }
 
-// 🌟 新增：智慧天數計算器，防止拿當天日期當作 Day Number
+// 🌟 智慧天數計算器 (保留基礎天數差逆推功能，做為 fallback 防呆)
 function calculateDayNumber(todayStr, courseStartDateStr) {
   if (!courseStartDateStr) return 1;
   try {
     const start = new Date(courseStartDateStr);
     const today = new Date(todayStr);
-    
-    // 計算天數差 (毫秒轉天數)
     const diffTime = today.getTime() - start.getTime();
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    
-    // 第一天差 0 天，所以 +1 變成 Day 1
     return diffDays >= 0 ? diffDays + 1 : 1;
   } catch (e) {
     console.error("❌ 計算天數失敗，降級為 Day 1:", e.message);
@@ -306,7 +302,7 @@ app.get("/api/offerings", async (req, res) => {
 });
 
 // ==========================================
-// 🧘‍♂️ 舊簽到路由 (同步套用智慧天數計算修復)
+// 🧘‍♂️ 舊簽到路由 (🛠️ 已同步升級：完美移除了對 course_start_date 的依賴)
 // ==========================================
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
@@ -321,7 +317,7 @@ app.post("/checkin/:id", async (req, res) => {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無效的學員 ID" });
   }
   try {
-    const [offerings] = await db.query('SELECT * FROM offerings WHERE id = ?', [parsedOfferingId]);
+    const [offerings] = await db.query('SELECT config, type FROM offerings WHERE id = ?', [parsedOfferingId]);
     if (!offerings || offerings.length === 0) {
       return res.status(444).json({ success: false, message: `❌ 找不到該課程期次 (ID: ${parsedOfferingId})` });
     }
@@ -369,8 +365,19 @@ app.post("/checkin/:id", async (req, res) => {
         });
       }
 
-      // 🌟 核心修復：使用開班起始時間，智慧精算今天是 Day 幾！
-      const dayNumber = calculateDayNumber(todayStr, currentOffering.course_start_date);
+      // 🌟 舊路由同步升級：從 config.sessions 中動態比對算出今天為 Day 幾
+      let dayNumber = 1;
+      if (config.sessions && Array.isArray(config.sessions)) {
+        const foundIdx = config.sessions.findIndex(s => s.date === todayStr);
+        if (foundIdx !== -1) {
+          dayNumber = foundIdx + 1;
+        } else {
+          const firstSessionDate = config.sessions[0]?.date;
+          if (firstSessionDate) {
+            dayNumber = calculateDayNumber(todayStr, firstSessionDate);
+          }
+        }
+      }
 
       const [slotExisting] = await db.query(
         `SELECT id FROM attendance_records 
@@ -394,7 +401,7 @@ app.post("/checkin/:id", async (req, res) => {
       return res.json({ 
         success: true, 
         name: studentName,
-        message: `【${slotLabel}】點名成功！` 
+        message: `【${slotLabel}】點名成功！(Day ${dayNumber})` 
       });
     }
 
@@ -405,7 +412,7 @@ app.post("/checkin/:id", async (req, res) => {
 });
 
 // ==========================================
-// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口 (🎯 最終完美對齊修復版)
+// 🧘‍♂️ 簽到路由分流 B：安全強化新網址入口 (🎯 解析 sessions JSON 精準推算天數版)
 // ==========================================
 app.post("/api/course-checkin", async (req, res) => {
   let bodyData = req.body;
@@ -413,60 +420,43 @@ app.post("/api/course-checkin", async (req, res) => {
   if (bodyData && typeof bodyData === 'object') {
     const keys = Object.keys(bodyData);
     if (keys.length === 1 && keys[0].trim().startsWith('{') && keys[0].includes('userId')) {
-      try {
-        bodyData = JSON.parse(keys[0]);
-      } catch (e) {
-        console.error("⚠️ 嘗試強制解開殘缺的二維碼 Key 失敗:", e.message);
-      }
+      try { bodyData = JSON.parse(keys[0]); } catch (e) { console.error("⚠️ 解析二維碼 Key 失敗:", e.message); }
     }
   }
 
   if (typeof bodyData === 'string') {
-    try { 
-      bodyData = JSON.parse(bodyData.trim()); 
-    } catch(e) {
-      bodyData = { userId: bodyData };
-    }
+    try { bodyData = JSON.parse(bodyData.trim()); } catch(e) { bodyData = { userId: bodyData }; }
   }
 
   let incomingUserId = bodyData?.userId || bodyData?.user_id || bodyData?.userid;
   let incomingOfferingId = bodyData?.offeringId || bodyData?.offering_id || bodyData?.offeringid;
-
   if (!incomingOfferingId) incomingOfferingId = 1;
 
   let parsedUserId = parseInt(incomingUserId, 10);
   let parsedOfferingId = parseInt(incomingOfferingId, 10);
 
-  if (isNaN(parsedUserId) && incomingUserId) {
-    parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
-  }
-  if (isNaN(parsedOfferingId) && incomingOfferingId) {
-    parsedOfferingId = parseInt(String(incomingOfferingId).replace(/\D/g, ""), 10);
-  }
+  if (isNaN(parsedUserId) && incomingUserId) parsedUserId = parseInt(String(incomingUserId).replace(/\D/g, ""), 10);
+  if (isNaN(parsedOfferingId) && incomingOfferingId) parsedOfferingId = parseInt(String(incomingOfferingId).replace(/\D/g, ""), 10);
 
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
-  console.log(`👉 [智慧解析成功] 學員ID: ${parsedUserId}, 班級ID: ${parsedOfferingId}`);
+  console.log(`👉 [智慧解析成功] 學員ID: ${parsedUserId}, 班級ID: ${parsedOfferingId} | 當前時間: ${fullDateTimeStr}`);
 
   if (!parsedUserId || isNaN(parsedUserId)) {
     return res.status(400).json({ success: false, message: "❌ 簽到失敗：無法從二維碼解析出任何有效的學員 ID" });
   }
 
   try {
-    const [courseRows] = await db.query(`SELECT config, type, course_start_date FROM offerings WHERE id = ?`, [parsedOfferingId]);
+    const [courseRows] = await db.query(`SELECT config, type FROM offerings WHERE id = ?`, [parsedOfferingId]);
     
     if (!courseRows || courseRows.length === 0) {
-      return res.status(444).json({ 
-        success: false, 
-        message: `❌ 簽到失敗：找不到該課程期次 (解析出 ID: ${parsedOfferingId})` 
-      });
+      return res.status(444).json({ success: false, message: `❌ 簽到失敗：找不到該課程期次 (ID: ${parsedOfferingId})` });
     }
-    
     const c = courseRows[0];
 
     const [userRows] = await db.query('SELECT name, user_type FROM users WHERE id = ?', [parsedUserId]);
     if (!userRows || userRows.length === 0) {
-      return res.status(444).json({ success: false, message: `❌ 簽到失敗：找不到此成員資料 (解析出的學員 ID: ${parsedUserId})` });
+      return res.status(444).json({ success: false, message: `❌ 簽到失敗：找不到此成員資料 (ID: ${parsedUserId})` });
     }
     const currentUser = userRows[0];
     const studentName = currentUser.name || "未知成員";
@@ -477,39 +467,39 @@ app.post("/api/course-checkin", async (req, res) => {
         'SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ?',
         [parsedUserId, parsedOfferingId, todayStr]
       );
-      
-      if (existing.length > 0) {
-        return res.json({ success: false, message: `【${studentName}】今日已完成簽到囉！` });
-      }
+      if (existing.length > 0) return res.json({ success: false, message: `【${studentName}】今日已完成簽到囉！` });
       
       await db.query(
         'INSERT INTO attendance_records (user_id, offering_id, checkin_date, day_number, slot_type, created_at) VALUES (?, ?, ?, 0, "regular", ?)',
         [parsedUserId, parsedOfferingId, todayStr, fullDateTimeStr]
       );
-      
       const roleLabel = userType === 'Volunteer' ? '義工' : userType === 'Venerable' ? '法師' : '訪客';
-      return res.json({ 
-        success: true, 
-        message: `✅ 【${studentName}】${roleLabel}簽到成功！` 
-      });
+      return res.json({ success: true, message: `✅ 【${studentName}】${roleLabel}簽到成功！` });
     }
 
-    const config = safeParseJSON(c.config);
-    const { slot: matchedSlot, label: slotLabel } = matchCourseSlot(nowTime, config);
+    const parsedConfig = safeParseJSON(c.config);
+    
+    let dayNumber = 1; 
+    if (parsedConfig.sessions && Array.isArray(parsedConfig.sessions)) {
+      const foundIdx = parsedConfig.sessions.findIndex(s => s.date === todayStr);
+      if (foundIdx !== -1) {
+        dayNumber = foundIdx + 1; 
+      } else {
+        const firstSessionDate = parsedConfig.sessions[0]?.date;
+        if (firstSessionDate) {
+          dayNumber = calculateDayNumber(todayStr, firstSessionDate);
+        }
+      }
+    }
+
+    const { slot: matchedSlot, label: slotLabel } = matchCourseSlot(nowTime, parsedConfig);
 
     if (!matchedSlot) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `❌ 【${studentName}】目前非開放點名時間。當前時間：${nowTime.slice(0, 5)}` 
-      });
+      return res.status(400).json({ success: false, message: `❌ 【${studentName}】目前非開放點名時間。當前時間：${nowTime.slice(0, 5)}` });
     }
 
-    // 🌟 核心最大修復：使用全新設計的日數計算器，自動比對 course_start_date 計算正確的 Day Number
-    const dayNumber = calculateDayNumber(todayStr, c.course_start_date);
-
     const [slotExisting] = await db.query(
-      `SELECT id FROM attendance_records 
-       WHERE user_id = ? AND offering_id = ? AND checkin_date = ? AND slot_type = ?`,
+      `SELECT id FROM attendance_records WHERE user_id = ? AND offering_id = ? AND checkin_date = ? AND slot_type = ?`,
       [parsedUserId, parsedOfferingId, todayStr, matchedSlot]
     );
 
@@ -525,7 +515,7 @@ app.post("/api/course-checkin", async (req, res) => {
     );
     
     await refreshAttendanceRate(parsedUserId, parsedOfferingId);
-    res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！(Day ${dayNumber})` });
+    res.json({ success: true, message: `✅ 【${studentName}】的【${slotLabel}】成功！(已對齊至 Day ${dayNumber})` });
 
   } catch (err) {
     console.error("❌ 後端新簽到路由出錯:", err);
