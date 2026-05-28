@@ -205,6 +205,9 @@ app.post("/check-duplicate", async (req, res) => {
 
 app.get("/admin/users", async (req, res) => {
   const { todayStr } = getLAFormattedDateTime();
+  const statusDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || ''))
+    ? String(req.query.date)
+    : todayStr;
   try {
     const sql = `
       SELECT 
@@ -216,7 +219,7 @@ app.get("/admin/users", async (req, res) => {
             SELECT 1 FROM attendance_records ar_today
             WHERE ar_today.user_id = users.id AND ar_today.checkin_date = ?
           ) THEN 'checked-in'
-          ELSE users.status
+          ELSE 'active'
         END AS status,
         (
           SELECT ar_latest.checkin_date
@@ -235,11 +238,82 @@ app.get("/admin/users", async (req, res) => {
       FROM users 
       ORDER BY id DESC
     `;
-    const [rows] = await db.query(sql, [todayStr]);
+    const [rows] = await db.query(sql, [statusDate]);
     res.json(rows);
   } catch (err) {
     console.error("❌ 控制台撈取人員清單失敗:", err);
     res.status(500).json({ error: "無法取得人員清單資料" });
+  }
+});
+
+app.post("/admin/maintenance/backfill-2026-05-17-attendance", async (req, res) => {
+  const { dryRun = true, confirm } = req.body || {};
+  const targetDate = '2026-05-17';
+  const targetOfferingId = 1;
+
+  if (!dryRun && confirm !== 'BACKFILL_2026_05_17') {
+    return res.status(400).json({
+      success: false,
+      error: "Missing confirmation. Send confirm: BACKFILL_2026_05_17 to apply the repair."
+    });
+  }
+
+  try {
+    const [missingRows] = await db.query(
+      `SELECT u.id, u.name, u.created_at
+       FROM users u
+       WHERE DATE(u.created_at) = ?
+         AND u.status = 'checked-in'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM attendance_records ar
+           WHERE ar.user_id = u.id
+             AND ar.checkin_date = ?
+         )
+       ORDER BY u.id ASC`,
+      [targetDate, targetDate]
+    );
+
+    if (dryRun) {
+      return res.json({
+        success: true,
+        dryRun: true,
+        count: missingRows.length,
+        users: missingRows
+      });
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO attendance_records
+         (user_id, offering_id, checkin_date, day_number, slot_type, created_at)
+       SELECT
+         u.id,
+         ?,
+         ?,
+         0,
+         'regular',
+         COALESCE(u.created_at, CONCAT(?, ' 00:00:00'))
+       FROM users u
+       WHERE DATE(u.created_at) = ?
+         AND u.status = 'checked-in'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM attendance_records ar
+           WHERE ar.user_id = u.id
+             AND ar.checkin_date = ?
+         )`,
+      [targetOfferingId, targetDate, targetDate, targetDate, targetDate]
+    );
+
+    res.json({
+      success: true,
+      dryRun: false,
+      matchedBeforeInsert: missingRows.length,
+      inserted: result.affectedRows
+    });
+  } catch (err) {
+    console.error("Backfill 2026-05-17 attendance failed:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
