@@ -743,7 +743,7 @@ app.post("/api/course-checkin", async (req, res) => {
 app.get("/admin/course-attendance/:offeringId", async (req, res) => {
   const { offeringId } = req.params;
   try {
-    const sqlEnrollments = `SELECT u.id AS user_id, u.name, u.phone, u.user_type, u.status, ce.attendance_rate, ce.certificate_no FROM course_enrollments ce JOIN users u ON ce.user_id = u.id WHERE ce.offering_id = ? ORDER BY u.name ASC`;
+    const sqlEnrollments = `SELECT u.id AS user_id, u.name, u.last_name, u.first_name, u.phone, u.user_type, u.status, ce.attendance_rate, ce.certificate_no FROM course_enrollments ce JOIN users u ON ce.user_id = u.id WHERE ce.offering_id = ? ORDER BY u.name ASC`;
     const [students] = await db.query(sqlEnrollments, [offeringId]);
     const [records] = await db.query("SELECT user_id, day_number, slot_type FROM attendance_records WHERE offering_id = ?", [offeringId]);
     const formattedData = students.map(student => {
