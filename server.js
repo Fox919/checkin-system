@@ -58,6 +58,15 @@ function getLAFormattedDateTime() {
   };
 }
 
+function buildDisplayName(lastName, firstName) {
+  const last = String(lastName || '').trim();
+  const first = String(firstName || '').trim();
+  const hasCjkName = /[\u3400-\u9FFF\uF900-\uFAFF]/.test(`${last}${first}`);
+
+  if (hasCjkName) return `${last}${first}`.trim();
+  return [first, last].filter(Boolean).join(' ').trim();
+}
+
 function matchCourseSlot(nowTime, config) {
   if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) return { slot: 'slot_1', label: '第一節簽到' };
   if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) return { slot: 'slot_2', label: '第二節簽到' };
@@ -317,6 +326,70 @@ app.post("/admin/maintenance/backfill-2026-05-17-attendance", async (req, res) =
   }
 });
 
+app.post("/admin/maintenance/rebuild-user-display-names", async (req, res) => {
+  const { dryRun = true, confirm } = req.body || {};
+
+  if (!dryRun && confirm !== 'REBUILD_USER_DISPLAY_NAMES') {
+    return res.status(400).json({
+      success: false,
+      error: "Missing confirmation. Send confirm: REBUILD_USER_DISPLAY_NAMES to apply the repair."
+    });
+  }
+
+  try {
+    const [rows] = await db.query(
+      `SELECT id, last_name, first_name, name
+       FROM users
+       WHERE COALESCE(last_name, '') <> ''
+          OR COALESCE(first_name, '') <> ''
+       ORDER BY id ASC`
+    );
+
+    const changes = rows
+      .map((row) => ({
+        id: row.id,
+        oldName: row.name || '',
+        newName: buildDisplayName(row.last_name, row.first_name)
+      }))
+      .filter((row) => row.newName && row.oldName !== row.newName);
+
+    if (dryRun) {
+      return res.json({
+        success: true,
+        dryRun: true,
+        count: changes.length,
+        changes
+      });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+      for (const change of changes) {
+        await connection.query(
+          "UPDATE users SET name = ? WHERE id = ?",
+          [change.newName, change.id]
+        );
+      }
+      await connection.commit();
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
+    res.json({
+      success: true,
+      dryRun: false,
+      updated: changes.length
+    });
+  } catch (err) {
+    console.error("Rebuild user display names failed:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/admin/update-receptionist", async (req, res) => {
   const { userId, receptionistName } = req.body;
   try {
@@ -374,7 +447,7 @@ app.post("/register", async (req, res) => {
     user_type, autoCheckin, notes, offeringId
   } = req.body;
 
-  const fullName = `${lastName || ''}${firstName || ''}`.trim();
+  const fullName = buildDisplayName(lastName, firstName);
   if (!fullName) return res.status(400).json({ error: "姓名為必填項目" });
   if (!phone && !email) return res.status(400).json({ error: "電話或 Email 必須提供其中一項" });
 
