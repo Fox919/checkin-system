@@ -326,6 +326,83 @@ app.post("/admin/maintenance/backfill-2026-05-17-attendance", async (req, res) =
   }
 });
 
+app.post("/admin/maintenance/backfill-missing-checked-in-attendance", async (req, res) => {
+  const { dryRun = true, confirm, offeringId = 1 } = req.body || {};
+  const targetOfferingId = parseInt(offeringId, 10) || 1;
+
+  if (!dryRun && confirm !== 'BACKFILL_MISSING_CHECKED_IN_ATTENDANCE') {
+    return res.status(400).json({
+      success: false,
+      error: "Missing confirmation. Send confirm: BACKFILL_MISSING_CHECKED_IN_ATTENDANCE to apply the repair."
+    });
+  }
+
+  try {
+    const [missingRows] = await db.query(
+      `SELECT
+         u.id,
+         u.name,
+         u.last_name,
+         u.first_name,
+         u.user_type,
+         u.status,
+         DATE(u.created_at) AS checkin_date,
+         u.created_at AS created_at
+       FROM users u
+       WHERE u.status = 'checked-in'
+         AND u.created_at IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM attendance_records ar
+           WHERE ar.user_id = u.id
+         )
+       ORDER BY u.created_at ASC, u.id ASC`
+    );
+
+    if (dryRun) {
+      return res.json({
+        success: true,
+        dryRun: true,
+        offeringId: targetOfferingId,
+        count: missingRows.length,
+        users: missingRows
+      });
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO attendance_records
+         (user_id, offering_id, checkin_date, day_number, slot_type, created_at)
+       SELECT
+         u.id,
+         ?,
+         DATE(u.created_at),
+         0,
+         'regular',
+         u.created_at
+       FROM users u
+       WHERE u.status = 'checked-in'
+         AND u.created_at IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM attendance_records ar
+           WHERE ar.user_id = u.id
+         )`,
+      [targetOfferingId]
+    );
+
+    res.json({
+      success: true,
+      dryRun: false,
+      offeringId: targetOfferingId,
+      matchedBeforeInsert: missingRows.length,
+      inserted: result.affectedRows
+    });
+  } catch (err) {
+    console.error("Backfill missing checked-in attendance failed:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/admin/maintenance/rebuild-user-display-names", async (req, res) => {
   const { dryRun = true, confirm } = req.body || {};
 
