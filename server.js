@@ -605,6 +605,7 @@ app.get("/api/offerings", async (req, res) => {
 app.post("/checkin/:id", async (req, res) => {
   const userId = req.params.id;
   const offeringId = req.query?.offeringId || req.body?.offeringId || 1; 
+  const requestedType = String(req.query?.type || req.body?.type || '').trim();
   
   const { todayStr, nowTime, fullDateTimeStr } = getLAFormattedDateTime();
 
@@ -627,7 +628,12 @@ app.post("/checkin/:id", async (req, res) => {
     }
     const currentUser = users[0];
     const studentName = currentUser.name || "隨喜訪客";
-    const userType = currentUser.user_type || "Visitor";
+    let userType = currentUser.user_type || "Visitor";
+
+    if (/^visitor$/i.test(requestedType) && userType !== 'Visitor') {
+      await db.query("UPDATE users SET user_type = ? WHERE id = ?", ['Visitor', parsedUserId]);
+      userType = 'Visitor';
+    }
 
     if (currentOffering.type === 'service' || userType !== 'Student') {
       const [existing] = await db.query(
