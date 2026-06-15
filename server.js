@@ -67,6 +67,12 @@ function buildDisplayName(lastName, firstName) {
   return [first, last].filter(Boolean).join(' ').trim();
 }
 
+function normalizePhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
+  return digits;
+}
+
 function matchCourseSlot(nowTime, config) {
   if (isTimeBetween(nowTime, config.slot_1_start, config.slot_1_end)) return { slot: 'slot_1', label: '第一節簽到' };
   if (isTimeBetween(nowTime, config.slot_2_start, config.slot_2_end)) return { slot: 'slot_2', label: '第二節簽到' };
@@ -204,8 +210,9 @@ app.get("/users", async (req, res) => {
 
 app.post("/check-duplicate", async (req, res) => {
   const { lastName, firstName, phone } = req.body;
+  const normalizedPhone = normalizePhone(phone);
   try {
-    const [results] = await db.query("SELECT id FROM users WHERE last_name = ? AND first_name = ? AND phone = ?", [lastName, firstName, phone]);
+    const [results] = await db.query("SELECT id FROM users WHERE last_name = ? AND first_name = ? AND phone = ?", [lastName, firstName, normalizedPhone]);
     res.json({ isDuplicate: results.length > 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -525,10 +532,11 @@ app.post("/register", async (req, res) => {
   } = req.body;
 
   const fullName = buildDisplayName(lastName, firstName);
+  const normalizedPhone = normalizePhone(phone);
   if (!fullName) return res.status(400).json({ error: "姓名為必填項目" });
-  if (!phone && !email) return res.status(400).json({ error: "電話或 Email 必須提供其中一項" });
+  if (!normalizedPhone && !email) return res.status(400).json({ error: "電話或 Email 必須提供其中一項" });
 
-  const qr_code = `QR_${phone || 'no-phone'}_${Date.now()}`;
+  const qr_code = `QR_${normalizedPhone || 'no-phone'}_${Date.now()}`;
   const initialStatus = autoCheckin ? 'checked-in' : 'active';
   const contactMethodString = Array.isArray(contact_method) ? contact_method.join(',') : (contact_method || '');
 
@@ -552,7 +560,7 @@ app.post("/register", async (req, res) => {
       firstName || '', 
       gender || 'Other', 
       fullName, 
-      phone || null, 
+      normalizedPhone || null, 
       email || null, 
       contactMethodString, 
       lang || 'zh', 
