@@ -201,7 +201,23 @@ app.get('/', (req, res) => res.status(200).send('✅ Check-in System API is runn
 
 app.get("/users", async (req, res) => {
   try {
-    const [rows] = await db.query("SELECT id, name, phone, user_type FROM users ORDER BY id DESC");
+    const { todayStr } = getLAFormattedDateTime();
+    const [rows] = await db.query(
+      `SELECT
+         users.id,
+         users.name,
+         users.phone,
+         users.user_type,
+         EXISTS (
+           SELECT 1
+           FROM attendance_records ar_today
+           WHERE ar_today.user_id = users.id
+             AND ar_today.checkin_date = ?
+         ) AS checked_in_today
+       FROM users
+       ORDER BY users.id DESC`,
+      [todayStr]
+    );
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
