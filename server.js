@@ -544,7 +544,7 @@ app.post("/register", async (req, res) => {
     referrer_name,       
     other_source_text,   
     is_blessed, 
-    user_type, autoCheckin, notes, offeringId
+    user_type, autoCheckin, notes, offeringId, receptionist_name
   } = req.body;
 
   const fullName = buildDisplayName(lastName, firstName);
@@ -564,8 +564,8 @@ app.post("/register", async (req, res) => {
       INSERT INTO users (
         last_name, first_name, gender, name, phone, email, 
         contact_method, lang, discovery_source, referrer_name, 
-        is_blessed, user_type, qr_code, notes, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        is_blessed, user_type, qr_code, notes, status, receptionist_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
     const finalNotes = other_source_text 
       ? `[補充來源: ${other_source_text}] ${notes || ''}`.trim() 
@@ -586,7 +586,8 @@ app.post("/register", async (req, res) => {
       user_type || 'Visitor', 
       qr_code, 
       finalNotes,           
-      initialStatus
+      initialStatus,
+      String(receptionist_name || '').trim() || null
     ]);
     
     const userId = result.insertId;
